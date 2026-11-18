@@ -1,0 +1,50 @@
+{
+  "lock_date": "2026-11-18",
+  "status": "locked before opening new_test; not yet used on any test seed",
+  "gate": {
+    "theta": 0.85,
+    "delta": 0.8,
+    "rule": "pass if tau >= theta and sigma <= delta"
+  },
+  "calibrated_on": {
+    "split": "validation_eval",
+    "first": 30000,
+    "last": 30199,
+    "runs": [
+      "2026-11-13_mhddqn_v2_seed42",
+      "2026-11-13_mhddqn_v2_seed43",
+      "2026-11-13_mhddqn_v2_seed44",
+      "2026-11-13_mhddqn_v2_seed45",
+      "2026-11-13_mhddqn_v2_seed46"
+    ],
+    "source_files": "runs/<run>/evaluation/gate_stats.jsonl and evaluation_events.jsonl"
+  },
+  "validation_summary": {
+    "pass_rate_pooled": 0.558,
+    "impact_rate_when_pass": 0.0304,
+    "impact_rate_when_fail": 0.0201,
+    "seeds_with_pass_above_fail": "4 of 5"
+  },
+  "criteria_disclosure": "Written AFTER viewing the calibration grid (not pre-registered). Metric: operational_impact_confirmed. Pass rate 40 to 80 percent. Impact when pass greater than impact when fail, pooled and in at least 4 of 5 seeds. Choose the largest difference among those.",
+  "limitations": [
+    "tau takes only five values (0.2, 0.4, 0.6, 0.8, 1.0). theta 0.85 therefore means all five heads agree on the main action.",
+    "With delta 0.8 sigma almost never filters; the split comes from tau.",
+    "Difference is about one percentage point; no significance test was run.",
+    "Outcome for gate-failed decisions is the RL action outcome, a proxy; LLM is not connected."
+  ],
+  "alternative_not_chosen": {
+    "theta": 0.85,
+    "delta": 0.5,
+    "note": "Also meets the criteria in 4 of 5 seeds with a smaller difference (+0.34 points)."
+  },
+  "code_default_unchanged": {
+    "file": "red_agent/rl_pipeline.py",
+    "value": "theta 0.6, delta 0.4 remain the code defaults until the gate is wired; any test run must pass theta and delta explicitly."
+  },
+  "test_protocol": {
+    "split": "new_test",
+    "first": 40000,
+    "last": 40499,
+    "use": "open once, only after this lock and after both general and baseline settings are fixed"
+  }
+}

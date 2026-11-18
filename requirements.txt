@@ -1,0 +1,21 @@
+# RED_AGENT - Python packages. Python 3.10 (the version this folder was tested with; 3.11 should also work).
+#
+# Versions are the ones installed in the Windows venv where this folder runs (pip freeze).
+# On Linux (Kali) install torch first. Use the CPU build if the machine has no NVIDIA GPU:
+#   pip install torch==2.2.0 --index-url https://download.pytorch.org/whl/cpu
+# Then:
+#   pip install -r requirements.txt
+
+numpy==1.26.4
+torch==2.2.0
+# CybORG (third_party/cyborg) imports these at load time:
+gym==0.26.2
+gymnasium==0.28.1
+pettingzoo==1.24.3
+prettytable==3.9.0
+PyYAML==6.0.1
+networkx==3.2.1
+# only used by the optional plotting function in red/simulator/cage4.py:
+matplotlib==3.8.2
+
+# LLM (optional, on-prem): install the Ollama app, then create the model from configs/qwen3-red.Modelfile.

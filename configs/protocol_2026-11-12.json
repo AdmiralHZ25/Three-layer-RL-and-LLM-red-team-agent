@@ -1,0 +1,13 @@
+{
+  "note": "agreed 2026-11-11/12",
+  "training": {
+    "seeds": [42, 43, 44, 45, 46],
+    "scenario_seed_offsets": [1000000, 1100000, 1200000, 1300000, 1400000],
+    "max_episodes": 50000
+  },
+  "validation_eval": {"first": 30000, "last": 30199},
+  "legacy_test": {"first": 20000, "last": 20099, "use": "report only"},
+  "new_test": {"first": 40000, "last": 40499, "use": "open once"},
+  "torch_threads": 1,
+  "PYTHONHASHSEED": "0"
+}
