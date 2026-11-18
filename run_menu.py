@@ -1,7 +1,8 @@
 """RED_AGENT evaluation menu: RL > Confidence Gate > LLM, validation seeds only.
 
 Run from this folder:  python run_menu.py
-No dashboard and no training. Caldera is not used. Test-split seeds (40000-40499) are refused.
+No dashboard and no training. Caldera is used only for read-only checks and for planning one step
+(nothing is sent to a target). Test-split seeds (40000-40499) are refused.
 """
 import csv
 import json
@@ -39,6 +40,9 @@ On-prem vs API LLM
 Single-RL vs Multi-RL
   f. Multi-RL + LLM (Recon, Advance, Impact)   [needs trained specialists]
   (Single-RL is option b.)
+Caldera (Phase 2, lab only)
+  k. Caldera read-only check                   [ready]
+  p. Caldera plan one step, no execution       [ready]
 Results and tools
   r. Results summary
   s. System check
@@ -186,7 +190,85 @@ ACTIONS = {
     's': check_install,
     'o': check_ollama,
     'x': custom,
+    'k': lambda: caldera_check(),
+    'p': lambda: caldera_plan(),
 }
+
+
+CALDERA_REQUIRED = ('CALDERA_API_KEY', 'CALDERA_PAW', 'CALDERA_LAB_HOSTS', 'CALDERA_ALLOWED_ABILITY_IDS')
+
+
+def caldera_settings_status():
+    """Print the Caldera settings (the API key value is never printed). Returns the names that are not set."""
+    from red import config as C
+    print(f'  CALDERA_URL                    {C.CALDERA_URL}')
+    print(f"  CALDERA_API_KEY                {'set' if C.CALDERA_API_KEY else 'NOT SET'} (value is never shown)")
+    print(f"  CALDERA_PAW                    {C.CALDERA_PAW or 'NOT SET'}")
+    print(f"  CALDERA_LAB_HOSTS              {', '.join(C.CALDERA_LAB_HOSTS) or 'NOT SET'}")
+    print(f'  CALDERA_ALLOWED_ABILITY_IDS    {len(C.CALDERA_ALLOWED_ABILITY_IDS)} id(s)')
+    ids = (C.CALDERA_ADVERSARY_ID, C.CALDERA_PLANNER_ID, C.CALDERA_SOURCE_ID)
+    print(f"  adversary / planner / source   {'all set' if all(ids) else 'some empty (ad-hoc)'}")
+    values = {'CALDERA_API_KEY': C.CALDERA_API_KEY, 'CALDERA_PAW': C.CALDERA_PAW,
+              'CALDERA_LAB_HOSTS': C.CALDERA_LAB_HOSTS, 'CALDERA_ALLOWED_ABILITY_IDS': C.CALDERA_ALLOWED_ABILITY_IDS}
+    return [name for name in CALDERA_REQUIRED if not values[name]]
+
+
+def caldera_check():
+    """Read-only: settings, the agents Caldera lists, and whether CALDERA_PAW passes the lab-host check."""
+    from red import config as C
+    from red.caldera.client import CalderaClient, CalderaError
+    print('Caldera settings:')
+    caldera_settings_status()
+    if not C.CALDERA_API_KEY:
+        print('Set CALDERA_API_KEY first. Nothing was contacted.')
+        return
+    client = CalderaClient()
+    try:
+        agents = client.list_agents()
+    except CalderaError as exc:
+        print(f'Caldera did not answer: {exc}')
+        return
+    print(f'Agents on the server: {len(agents)}')
+    for a in agents:
+        mark = '   <- CALDERA_PAW' if a.get('paw') == C.CALDERA_PAW else ''
+        print(f"  paw={a.get('paw')}  host={a.get('host')}  platform={a.get('platform')}{mark}")
+    if C.CALDERA_PAW:
+        try:
+            client.check_paw(C.CALDERA_PAW)
+            print('CALDERA_PAW passes the lab-host check.')
+        except CalderaError as exc:
+            print(f'CALDERA_PAW check failed: {exc}')
+
+
+def caldera_plan():
+    """Plan ONE step: the LLM picks one allowed ability on the agent. Nothing is sent to the target."""
+    from red import config as C
+    from red.caldera.client import CalderaClient, CalderaError
+    from red.caldera.executor import CalderaExecutor
+    from red.llm import make_llm
+    print('Caldera settings:')
+    missing = caldera_settings_status()
+    if missing:
+        print('Not set: ' + ', '.join(missing) + '. Nothing was contacted.')
+        return
+    stage = input('Stage (recon / advance / impact, Enter = recon): ').strip().lower() or 'recon'
+    client = CalderaClient()
+    try:
+        client.check_paw(C.CALDERA_PAW)
+        with client.operation('red-plan-only') as op_id:      # always finished again on exit
+            links = client.get_candidates(op_id, C.CALDERA_PAW)
+            print(f'Allowed abilities on this agent: {len(links)}')
+            for i, link in enumerate(links):
+                print(f'  {i}. {link.name or link.ability_id} [{link.technique_id} {link.tactic}] target={link.target or "-"}')
+            if not links:
+                print('No allowed ability can run on this agent. Nothing was planned.')
+                return
+            rec = CalderaExecutor(client, make_llm()).step(op_id, C.CALDERA_PAW, stage=stage, execute=False)
+            print(f'PLANNED, NOT EXECUTED: ability {rec.ability_id} [{rec.technique_id}], chosen by {rec.source}.')
+            if rec.source == 'fallback':
+                print('The LLM gave no usable answer, so the first candidate was taken. Check the LLM first (option o).')
+    except CalderaError as exc:
+        print(f'Caldera: {exc}')
 
 
 def main():
