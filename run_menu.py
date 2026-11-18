@@ -40,9 +40,10 @@ On-prem vs API LLM
 Single-RL vs Multi-RL
   f. Multi-RL + LLM (Recon, Advance, Impact)   [needs trained specialists]
   (Single-RL is option b.)
-Caldera (Phase 2, lab only)
+Caldera (lab only)
   k. Caldera read-only check                   [ready]
   p. Caldera plan one step, no execution       [ready]
+  g. Caldera operation, unattended in scope    [ready]
 Results and tools
   r. Results summary
   s. System check
@@ -192,6 +193,7 @@ ACTIONS = {
     'x': custom,
     'k': lambda: caldera_check(),
     'p': lambda: caldera_plan(),
+    'g': lambda: caldera_run(),
 }
 
 
@@ -269,6 +271,62 @@ def caldera_plan():
                 print('The LLM gave no usable answer, so the first candidate was taken. Check the LLM first (option o).')
     except CalderaError as exc:
         print(f'Caldera: {exc}')
+
+
+def caldera_run():
+    """Start an operation that acts without asking for each step, but only inside the scope set in the environment."""
+    from red import config as C
+    from red.caldera.choosers import MODES, make_chooser, read_gate_lock
+    from red.caldera.client import CalderaClient, CalderaError
+    from red.caldera.runner import run_operation
+    from red.caldera.scope import Scope, ScopeViolation
+    print('Caldera settings:')
+    missing = caldera_settings_status()
+    if missing:
+        print('Not set: ' + ', '.join(missing) + '. Nothing was contacted.')
+        return
+    mode = input(f"Mode ({' / '.join(MODES)}, Enter = rl+llm): ").strip().lower() or 'rl+llm'
+    if mode not in MODES:
+        print('Unknown mode. Nothing was started.')
+        return
+    stage = input('Stage (recon / advance / impact, Enter = recon): ').strip().lower() or 'recon'
+    budget = input('Step budget, 1 to 20 (Enter = 3): ').strip() or '3'
+    run_root = ROOT / 'runs' / 'caldera'
+    try:
+        scope = Scope(paw=C.CALDERA_PAW, lab_hosts=C.CALDERA_LAB_HOSTS,
+                      allowed_abilities=frozenset(C.CALDERA_ALLOWED_ABILITY_IDS),
+                      max_steps=int(budget), stop_file=run_root / 'STOP')
+    except ValueError as exc:
+        print(f'Scope refused: {exc}. Nothing was started.')
+        return
+    print(f'Scope: paw {C.CALDERA_PAW}, lab hosts {", ".join(C.CALDERA_LAB_HOSTS)}, '
+          f'{len(scope.allowed_abilities)} allowed abilities, at most {scope.max_steps} steps, mode {mode}.')
+    print(f'To stop early, create this file: {scope.stop_file}')
+    if input('Type JALANKAN to start (anything else cancels): ').strip() != 'JALANKAN':
+        print('Cancelled. Nothing was started.')
+        return
+    llm = agent = None
+    theta = delta = None
+    if mode in ('llm', 'rl+llm'):
+        if not check_ollama():
+            print('Cancelled: Ollama or the model is not ready.')
+            return
+        from red.llm import make_llm
+        llm = make_llm()
+    if mode in ('rl', 'rl+llm'):
+        from red.pipeline.wiring import load_agents
+        agent = load_agents({'general': str(GENERAL_CKPT)})['general']
+        theta, delta = read_gate_lock(GATE_LOCK)
+    chooser = make_chooser(mode, llm=llm, agent=agent, theta=theta, delta=delta)
+    run_dir = run_root / datetime.now().strftime('%Y%m%d-%H%M%S')
+    client = CalderaClient()
+    try:
+        client.check_paw(C.CALDERA_PAW)
+        summary = run_operation(client, scope, chooser, mode, stage, run_dir)
+    except (CalderaError, ScopeViolation, ValueError) as exc:
+        print(f'Stopped: {exc}')
+        return
+    print(f"Done. Steps sent: {summary['steps_sent']}. Stop reason: {summary['stop']}. Log folder: {run_dir}")
 
 
 def main():

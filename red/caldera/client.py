@@ -57,6 +57,10 @@ class CalderaClient:
         """GET /agents: every agent Caldera knows (paw, host, platform, ...)."""
         return self._req("GET", "/agents") or []
 
+    def list_abilities(self):
+        """GET /abilities: every ability installed on the Caldera server (read-only)."""
+        return self._req("GET", "/abilities") or []
+
     def check_paw(self, paw):
         """The paw must equal CALDERA_PAW, exist in GET /agents, and run on a host listed in CALDERA_LAB_HOSTS
         (by host name or IP). Otherwise raises CalderaError. Returns the paw."""

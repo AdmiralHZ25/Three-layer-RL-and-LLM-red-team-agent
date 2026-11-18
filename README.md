@@ -24,7 +24,7 @@ RED_AGENT/
     ├── llm/               prompt, LLM clients (Ollama, stub), Acceptance Gate
     ├── pipeline/          RL > gate > LLM chooser and its wiring
     ├── evaluation/        evaluator, seed protocol, metrics
-    └── caldera/           Caldera REST client, link selection, human approval gate (Phase 2)
+    └── caldera/           Caldera REST client, scope, mapping, choosers, runner, approval gate (Phase 2)
 ```
 
 ## Setup (Linux, for example Kali)
@@ -66,7 +66,9 @@ Menu options:
 - `k` **read-only check**: prints the settings (never the key), lists the agents on the server, and checks `CALDERA_PAW` against the lab hosts.
 - `p` **plan one step, no execution**: creates a temporary operation, lists the allowed abilities for the agent, lets the LLM choose one, and finishes the operation again. The chosen ability is printed. Nothing is sent to the target.
 
-Execution (`execute=True` in `red/caldera/executor.py`) needs a live client and a human approval for each action. It is not available from the menu yet.
+- `g` **unattended operation inside a scope**: the agent creates an operation, then repeats: list the allowed candidates, choose one (RL, LLM, or RL+LLM), check the scope, send, wait for the result. The scope is the approval given in advance: only the allowed abilities and the lab hosts may be sent, and the run stops at the step budget, at the STOP file, or at the first link that does not end with success. Choose the mode when you start (`llm`, `rl`, or `rl+llm`). You must type `JALANKAN` to start. Logs go to `runs/caldera/<time>/steps.jsonl` and `summary.json`.
+
+Stopping early: create an empty file named `STOP` in `runs/caldera/`.
 
 ## Menu
 
@@ -93,7 +95,9 @@ Results are saved under `runs/pipeline_eval/<name>_<time>/`. Existing results ar
 
 - Multi-RL (option f) needs recon and impact specialists that were actually trained. The ones in the training runs have 0 updates, so they are not used.
 - API options (d, e) need an API client and your approval before any briefing is sent to an external service.
-- Caldera execution from the menu is not wired. The approval gate exists in code and is tested offline.
+- Caldera operations (option `g`) act on the lab VM without asking for each step. Keep the allow-list to discovery abilities until you have reviewed the logs.
+- The mapping from Caldera techniques to CAGE-4 classes (`red/caldera/mapping.py`) and the 22-feature vector for Caldera (`red/caldera/features.py`) are draft approximations. The RL values for Caldera are heuristics, not the CAGE-4 policy.
+- The gate values for Caldera are the locked CAGE-4 values, not calibrated for Caldera.
 - The planning step (option p) still has a fallback: if the LLM gives no usable answer, the first allowed ability is taken. Check the LLM first (option o).
 - LLM outputs are not always identical between runs, even with the same seed and code. Example: seed 30000 gave return 126.45 in one validation run and 117.45 in another. The cause is not confirmed.
 - Gate values (theta 0.85, delta 0.8) are in `configs/gate_lock_2026-11-18.json`.

@@ -11,6 +11,8 @@ torch==2.2.0
 # CybORG (third_party/cyborg) imports these at load time:
 gym==0.26.2
 gymnasium==0.28.1
+# CybORG imports pygame when it loads (CybORG/env.py), so the red package cannot start without it:
+pygame==2.5.2
 pettingzoo==1.24.3
 prettytable==3.9.0
 PyYAML==6.0.1
