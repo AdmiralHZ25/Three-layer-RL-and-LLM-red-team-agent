@@ -5,6 +5,10 @@ from a short list. The list is built from the objective, the plan and the memory
 The three abilities are sent together, so they run on one beacon. The run stops when the objective is reached with a
 quote from the real output, or when a limit or a safety stop applies.
 
+RL+LLM mode (an rl_chooser is given): when the Confidence Gate passes, the RL action is the only action of the step and
+the LLM is not asked. Otherwise the LLM picks ONE action, and it is sent only when at least half of the RL heads rank it
+first (RlChooser.vote). A refused LLM action sends nothing; see the stop reasons below.
+
 Stop reasons (summary.json, key 'stop'):
   objective_reached        the planner said done, and its quote is really in the output
   budget_used              the step ceiling is used up; the objective is not reached
@@ -17,6 +21,7 @@ Stop reasons (summary.json, key 'stop'):
   scope: ...               a link is outside the lab host or outside the offered list; nothing in that step is sent
   link status X            a link waits for a person on the Caldera server (untrusted, high_viz)
   N batch gagal berturut-turut   N steps in a row had no successful link
+  N langkah ditolak Acceptance Gate berturut-turut   RL+LLM mode: N LLM actions in a row were refused (nothing sent)
   objective_unverified     the planner claimed the objective, but the check step did not show it; the run stops
 
 An ability is never offered to the planner when:
@@ -85,13 +90,13 @@ def offered_links(links, blocked=frozenset()):
     return out
 
 
-def _ask_choice(llm, prompt, count):
+def _ask_choice(llm, prompt, count, max_n=BATCH_MAX):
     """(kind, value, reply, error). kind 'stop': value is the reason. kind 'indices': value is the list of numbers.
     kind 'none': nothing valid, value is None."""
     res = llm.complete(prompt, num_predict=CHOICE_MAX_TOKENS)
     if not res.ok:
         return 'none', None, '', res.error or 'llm failed'
-    kind, value = parse_batch(res.text, count)
+    kind, value = parse_batch(res.text, count, max_n)
     return kind, value, res.text, None
 
 
@@ -164,6 +169,7 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
     mode = 'rl+llm' if rl_chooser is not None else 'llm'
     summary = {'objective': objective, 'planner': getattr(llm, 'model', ''), 'mode': mode, 'paw': paw,
                'max_steps': max_steps, 'steps_sent': 0, 'batches': 0, 'failures': 0,
+               'rl_actions': 0, 'llm_actions': 0, 'llm_rejected': 0,
                'objective_reached': False, 'evidence': None,
                'stop': None, 'started': datetime.now().isoformat(timespec='seconds'), 'blocked': [], 'plan': [],
                'unverified_claims': 0, 'required': list(required_phrases(objective))}
@@ -207,7 +213,8 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
             notes = notes_text(memory.facts)
             history = memory.history_text()
 
-            # RL gate: try to pick one ability when the agent is confident enough.
+            # RL gate (solution overview, figure 6): when the Confidence Gate passes, the RL action is the step's action
+            # and the LLM is not asked.
             rl_pick = None
             rl_step_info = None
             if rl_chooser is not None:
@@ -215,14 +222,13 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
                 if _rl_idx is not None and rl_step_info.get('gate_passed'):
                     rl_pick = short[_rl_idx]
 
-            # LLM fills remaining slots from the shortlist (minus the RL pick, if any).
-            llm_short = [link for link in short if link is not rl_pick]
-            llm_budget = BATCH_MAX - (1 if rl_pick else 0)
-
-            if llm_short:
+            # Otherwise the LLM chooses from the shortlist. In RL+LLM mode it chooses one action, checked by the vote below.
+            llm_budget = 1 if rl_chooser is not None else BATCH_MAX
+            if rl_pick is None:
                 kind, value, reply, err = _ask_choice(
-                    llm, build_choice_prompt(objective, llm_short, notes, history, plan, verify=verifying),
-                    len(llm_short))
+                    llm, build_choice_prompt(objective, short, notes, history, plan, verify=verifying,
+                                             batch_max=llm_budget),
+                    len(short), max_n=llm_budget)
             else:
                 kind, value, reply, err = 'indices', [], '', None
 
@@ -233,8 +239,28 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
                      'not sent')
                 break
 
-            llm_links = [llm_short[i] for i in value[:llm_budget]] if kind == 'indices' else []
-            batch = ([rl_pick] if rl_pick else []) + llm_links
+            verdict = None
+            if rl_pick is not None:
+                batch, source = [rl_pick], 'RL'
+            else:
+                batch = [short[i] for i in value[:llm_budget]] if kind == 'indices' else []
+                source = 'LLM'
+                if batch and rl_chooser is not None:
+                    # Acceptance Gate (figure 6): at least half of the heads must rank the LLM's action first.
+                    verdict = rl_chooser.vote(short, value[0], tick=step, horizon=max_steps)
+                    if not verdict['accepted']:
+                        batch = []
+
+            if not batch and rl_chooser is not None:
+                # RL+LLM mode: no acceptable action this step, so nothing is sent. Too many in a row stop the run.
+                summary['llm_rejected'] += 1
+                _log(steps, step, None, {'planner': 'aksi', 'reply': reply[:300], 'rl_info': rl_step_info,
+                                         'error': err, 'acceptance': verdict}, 'not sent')
+                consecutive += 1
+                if consecutive >= max_failures:
+                    summary['stop'] = f'{max_failures} langkah ditolak Acceptance Gate berturut-turut'
+                    break
+                continue
 
             if not batch:
                 summary['stop'] = _refusal('aksi', err, reply)
@@ -252,23 +278,26 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
                 for link in batch:
                     _log(steps, step, link, {'batch_size': len(batch), 'reply': reply[:300]}, 'not sent')
                 break
-            choice_base = {'batch_size': len(batch), 'reply': reply[:300], 'rl_info': rl_step_info}
-            # Record step start for experience collection (before submission).
-            n_facts_before = len(memory.facts)
+            choice_base = {'batch_size': len(batch), 'reply': reply[:300], 'rl_info': rl_step_info,
+                           'source': source, 'acceptance': verdict}
+            # One open experience record per link, closed below once its outcome is known.
             if experience_recorder is not None:
-                for link in batch:
-                    experience_recorder.record_step(link, tick=step, n_facts=n_facts_before)
+                experience_recorder.record_batch(batch, tick=step)
             link_ids = [client.submit(op_id, link, allowed=set(ids)) for link in batch]
             statuses = [client.wait(op_id, link_id) for link_id in link_ids]
             summary['steps_sent'] += len(batch)
             summary['batches'] += 1
+            summary['rl_actions' if source == 'RL' else 'llm_actions'] += len(batch)
             raws = []
             outputs = []
+            facts_gained = []
             for link, link_id, status in zip(batch, link_ids, statuses):
                 raw = client.get_link_result(op_id, link_id)
                 raws.append(raw or '')
                 outputs.append(memory.record(step, link, status, raw))
+                facts_before = len(memory.facts)
                 memory.add_facts(_new_facts(extract_facts(raw), own_hosts))
+                facts_gained.append(len(memory.facts) - facts_before)
                 if ATOMIC_MISSING in (raw or '') and 'atomic' not in blocked:
                     # Learned from the output, not chosen by a person: the Atomic module is missing on the VM, so no
                     # ability that needs it is offered again in this run.
@@ -289,6 +318,18 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
             log(f'step {step}: ' + '; '.join(f'[{link.tactic}] {link.name or link.ability_id} -> {status}'
                                               for link, status in zip(batch, statuses)))
             human = [status for status in statuses if status in HUMAN_STATUSES]
+            if experience_recorder is not None:
+                # The run ends here when the objective is shown, a human status stops it, or this was the verify step.
+                objective_now = bool(check and check['verified'])
+                ends_run = objective_now or bool(human) or verifying
+                next_links_for_exp = [] if ends_run else shortlist(
+                    memory.mask(offered_links(client.get_all_candidates(op_id, paw), frozenset(blocked))),
+                    objective, plan, SHORTLIST_SIZE,
+                )
+                experience_recorder.close_batch(
+                    list(zip(statuses, facts_gained)), next_links=next_links_for_exp, next_tick=step + 1,
+                    done=ends_run, objective_reached=objective_now,
+                )
             if human:
                 summary['stop'] = f'link status {human[0]}'
                 break
@@ -302,14 +343,6 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
                     summary['stop'] = 'objective_reached'
                 else:
                     summary['stop'] = 'objective_unverified'
-                if experience_recorder is not None:
-                    n_facts_after = len(memory.facts)
-                    for link, status in zip(batch, statuses):
-                        experience_recorder.close_step(
-                            status=status, n_facts_after=n_facts_after,
-                            next_links=[], next_tick=step + 1,
-                            objective_reached=verify_ok,
-                        )
                 break
             if not succeeded:
                 consecutive += 1
@@ -323,21 +356,6 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
                 summary['objective_reached'] = True
                 summary['evidence'] = check['evidence']
                 summary['stop'] = 'objective_reached'
-            # Close experience records for this step now that outcome is known.
-            if experience_recorder is not None:
-                next_links_for_exp = shortlist(
-                    memory.mask(offered_links(client.get_all_candidates(op_id, paw), frozenset(blocked))),
-                    objective, plan, SHORTLIST_SIZE,
-                ) if not step_objective_reached else []
-                n_facts_after = len(memory.facts)
-                for link, status in zip(batch, statuses):
-                    experience_recorder.close_step(
-                        status=status,
-                        n_facts_after=n_facts_after,
-                        next_links=next_links_for_exp,
-                        next_tick=step + 1,
-                        objective_reached=step_objective_reached,
-                    )
             if step_objective_reached:
                 break
             if check and check['done']:

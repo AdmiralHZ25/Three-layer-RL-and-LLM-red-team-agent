@@ -139,7 +139,7 @@ def shortlist(links, objective, plan=(), size=SHORTLIST_SIZE):
     return chosen
 
 
-def build_choice_prompt(objective, shortlist_links, notes='', history='', plan=None, verify=False):
+def build_choice_prompt(objective, shortlist_links, notes='', history='', plan=None, verify=False, batch_max=BATCH_MAX):
     lines = [ROLE, f'Tujuan operasi (ditetapkan manusia): {objective}']
     if plan:
         lines.append(plan_text(plan))
@@ -150,9 +150,11 @@ def build_choice_prompt(objective, shortlist_links, notes='', history='', plan=N
         lines.append(notes)
     if history:
         lines.append(history)
-    lines.append(f'Pilih sampai {BATCH_MAX} aksi untuk langkah berikutnya dari daftar di bawah, sesuai rencana. '
-                 'Boleh dari taktik berbeda. Balas SATU baris: ACTION: <nomor>, <nomor>, <nomor> '
-                 f'(satu sampai {BATCH_MAX} nomor).')
+    many = ', '.join(['<nomor>'] * batch_max)
+    count_note = f'(satu sampai {batch_max} nomor).' if batch_max > 1 else '(satu nomor).'
+    lines.append(f'Pilih sampai {batch_max} aksi untuk langkah berikutnya dari daftar di bawah, sesuai rencana. '
+                 + ('Boleh dari taktik berbeda. ' if batch_max > 1 else '')
+                 + f'Balas SATU baris: ACTION: {many} {count_note}')
     lines.append('Jika tujuan sudah tercapai, atau tidak mungkin dicapai dengan daftar ini, balas dua baris: '
                  'ACTION: STOP lalu ALASAN: <satu kalimat>.')
     for i, link in enumerate(shortlist_links):

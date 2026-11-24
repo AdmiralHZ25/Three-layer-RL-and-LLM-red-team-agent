@@ -57,12 +57,14 @@ def retrain(
         log('Tidak ada transisi yang dimuat. Pelatihan dilewati.')
         return {'transitions_loaded': 0, 'steps_run': 0, 'final_loss': None}
 
+    need = max(agent.cfg.batch_size, agent.cfg.warmup)
+    if len(agent.replay) < need:
+        log(f'Transisi di buffer {len(agent.replay)} < {need} (batch/warmup). Tidak ada langkah gradien.')
+        return {'transitions_loaded': total_added, 'steps_run': 0, 'final_loss': None}
     log(f'Total {total_added} transisi di buffer. Menjalankan {n_steps} langkah gradien…')
     last_loss = None
     steps_run = 0
     for _ in range(n_steps):
-        if len(agent.replay) < max(agent.cfg.batch_size, agent.cfg.warmup):
-            break
         loss = agent.train_step()
         if loss is not None:
             last_loss = loss
@@ -78,20 +80,25 @@ def retrain_from_checkpoint(
     output_path: Union[str, Path],
     n_steps: int = 500,
     log=print,
-) -> Path:
+) -> Optional[Path]:
     """Load a checkpoint, fine-tune on emulation experiences, save to output_path.
 
     Raises FileExistsError if output_path already exists (safe by default).
-    Returns the path where the new checkpoint was saved.
+    Returns the path where the new checkpoint was saved, or None when no gradient step ran (nothing is saved).
     """
     checkpoint_path = Path(checkpoint_path)
     output_path = Path(output_path)
+    if output_path.exists():
+        raise FileExistsError(f'{output_path} sudah ada; pilih nama lain.')
 
     log(f'Memuat checkpoint dari {checkpoint_path.name}…')
     agent = MultiHeadDDQNAgent.load(checkpoint_path)
     agent.online.train()
 
     stats = retrain(agent, experience_paths, n_steps=n_steps, log=log)
+    if stats['steps_run'] == 0:
+        log('Tidak ada langkah gradien: checkpoint tidak disimpan.')
+        return None
 
     extra = {
         'fine_tuned_from': str(checkpoint_path),
@@ -105,6 +112,16 @@ def retrain_from_checkpoint(
     agent.save(output_path, extra=extra)
     log(f'Checkpoint baru disimpan ke {output_path}')
     return output_path
+
+
+def retrain_after_run(runs_root, checkpoint_path, output_path, log=print) -> Optional[Path]:
+    """Step 10, automatic (figure 6): after a RL+LLM run that accepted LLM actions, fine-tune on the experiences of all
+    Caldera runs under runs_root. The result is a candidate file at output_path; the checkpoint in use is not changed.
+    Returns None when there are no experiences or no gradient step could run."""
+    paths = sorted(Path(runs_root).glob('*/experience.npz'))
+    if not paths:
+        return None
+    return retrain_from_checkpoint(checkpoint_path, paths, output_path, log=log)
 
 
 # ---------------------------------------------------------------------------

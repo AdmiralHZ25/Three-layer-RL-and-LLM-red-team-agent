@@ -178,13 +178,16 @@ class FakeServer:
     def is_done(self, op_id):
         return False
 
-    def get_candidates(self, op_id, paw):
+    def get_all_candidates(self, op_id, paw):
         return [PotentialLink(paw='p1', ability_id='a1', name='Find files', technique_id='T1083',
                               tactic='discovery', target='DESKTOP-TEST', command='dir', executor='psh')]
 
-    def submit(self, op_id, pl):
+    def submit(self, op_id, pl, allowed=None):
         self.submitted.append(pl.ability_id)
         return 'link-1'
+
+    def get_link_result(self, op_id, link_id):
+        return ''
 
     def wait(self, op_id, link_id):
         return '0'
@@ -195,15 +198,23 @@ class AutoFlow(unittest.TestCase):
         import run_menu
         from red.llm import FakeLLM
         fake = FakeServer()
-        # agent number, search (Enter = all), action number, mode, step budget, start
-        answers = ['1', '', '1', 'llm', '1', 'JALANKAN']
+        # mode (1 = LLM saja), agent number, objective in words, start (1), record experiences (Enter = ya)
+        answers = ['1', '1', 'Temukan host di lab', '1', '']
+
+        def responder(prompt):
+            if 'Buat rencana singkat' in prompt:
+                return 'RENCANA:\n1. Cari host\n2. Lapor'
+            if 'Pilih sampai' in prompt:
+                return 'ACTION: 0'
+            return 'DONE: no\nEVIDENCE:'
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.multiple(config, CALDERA_URL='http://127.0.0.1:1', CALDERA_API_KEY='x',
                                     CALDERA_PAW='', CALDERA_LAB_HOSTS=(), CALDERA_ALLOWED_ABILITY_IDS=(),
-                                    CALDERA_ADVERSARY_ID='', CALDERA_PLANNER_ID='', CALDERA_SOURCE_ID=''), \
+                                    CALDERA_ADVERSARY_ID='', CALDERA_PLANNER_ID='', CALDERA_SOURCE_ID='',
+                                    CALDERA_RUN_MAX_STEPS=1), \
                 mock.patch.object(run_menu, 'ROOT', Path(tmp)), \
                 mock.patch.object(run_menu, 'check_ollama', return_value=True), \
-                mock.patch('red.llm.make_llm', return_value=FakeLLM()), \
+                mock.patch('red.llm.make_llm', return_value=FakeLLM(responder)), \
                 mock.patch('red.caldera.client.CalderaClient', return_value=fake), \
                 mock.patch('builtins.input', side_effect=answers), \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -211,7 +222,9 @@ class AutoFlow(unittest.TestCase):
             logs = list(Path(tmp, 'runs', 'caldera').glob('*/steps.jsonl'))
             self.assertEqual(len(logs), 1)
             record = json.loads(logs[0].read_text(encoding='utf-8').splitlines()[0])
-            self.assertEqual(record['choice']['source'], 'LLM')
+            # LLM-only mode: the record keeps the LLM's reply and no RL pick (the log has no 'source' key).
+            self.assertIsNone(record['choice']['rl_info'])
+            self.assertIn('ACTION: 0', record['choice']['reply'])
         self.assertEqual(fake.submitted, ['a1'])
 
 

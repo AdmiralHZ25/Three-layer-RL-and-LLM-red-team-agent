@@ -67,6 +67,20 @@ class RlChooser:
                 'gate_passed': d['passed']}
         return eligible[pick], info
 
+    def vote(self, links, index, tick=0, horizon=1):
+        """Acceptance Gate for an LLM action (solution overview, figure 6): at least half of the K heads must rank the
+        action first among the mapped candidates. An action without a CAGE class has no head to vote for it, so refused."""
+        eligible = [i for i, l in enumerate(links) if cage_class(l.technique_id)]
+        if index not in eligible:
+            return {'accepted': False, 'mapped': False, 'votes': 0, 'heads': None}
+        classes = [cage_class(links[i].technique_id) for i in eligible]
+        feats = np.stack([caldera_features(c, tick, horizon) for c in classes])
+        qm = self.agent.q_matrix(feats).detach().cpu().numpy().astype(np.float64)
+        pos = eligible.index(index)
+        heads = qm.shape[1]
+        votes = sum(int(qm[:, k].argmax()) == pos for k in range(heads))
+        return {'accepted': 2 * votes >= heads, 'mapped': True, 'votes': votes, 'heads': heads}
+
 
 class HybridChooser:
     """RL > gate > LLM: the RL pick when the gate passes, otherwise the LLM."""

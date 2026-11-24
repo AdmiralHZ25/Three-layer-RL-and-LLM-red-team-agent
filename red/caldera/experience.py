@@ -1,24 +1,25 @@
 """Step 9: Record Caldera run steps as RL training experiences.
 
-Each executed step produces one Transition that can later be added to a replay buffer
+Each executed link produces one Transition that can later be added to a replay buffer
 for offline RL fine-tuning (see red/caldera/retrain.py).
 
 Reward heuristic (matches CAGE-4 Weights as closely as possible):
   -0.05  per step (matches Weights.step penalty)
   +1.00  when the ability succeeded (status == '0')
   -0.10  when the ability failed
-  +0.20  per new unique fact discovered in the output
-  +100.0 at the step that makes objective_reached True (matches Weights.impact)
+  +0.20  per new unique fact discovered in the output of that link
+  +100.0 once per batch, on its last mapped link, when objective_reached is True (matches Weights.impact)
 
-The 'pending record' pattern:
-  - record_step() is called at the START of a step (action chosen, feature built).
-  - close_step() is called AFTER results arrive (reward known, next-state features built).
-  - flush() seals the last open record when the run ends.
+The 'open batch' pattern (one record per link, closed with its own outcome):
+  - record_batch() is called before submitting a batch: one open record per link, in batch order.
+  - close_batch() is called once the results of the whole batch are known, with (status, new_facts) per link
+    in the same order. Failed links are closed too, so no record is lost.
+  - flush() seals records of a batch that never reached close_batch (for example after an exception).
 
 All records are stored in memory and optionally saved to a .npz file at the end.
 """
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -44,7 +45,6 @@ _ALL_HEADS_MASK = None   # filled lazily based on agent's K value
 class _Pending:
     feature: np.ndarray
     tick: int
-    n_facts_before: int
 
 
 class CalderaExperienceRecorder:
@@ -52,10 +52,10 @@ class CalderaExperienceRecorder:
 
     Usage inside run_agentic():
         rec = CalderaExperienceRecorder(max_steps, heads=5)
-        # start of step loop:
-        rec.record_step(link, tick, n_facts_so_far)
-        # after executing and collecting results:
-        rec.close_step(status, n_facts_after, next_short, tick+1, max_steps, objective_reached)
+        # before submitting a batch:
+        rec.record_batch(batch, tick)
+        # after the results of the whole batch are known (one (status, new_facts) per link, same order):
+        rec.close_batch(list(zip(statuses, facts_gained)), next_short, tick + 1, done, objective_reached)
         # after the loop:
         rec.flush()
         transitions = rec.transitions
@@ -66,7 +66,7 @@ class CalderaExperienceRecorder:
         self.heads = heads
         self._mask: Tuple[int, ...] = tuple(1 for _ in range(heads))
         self.transitions: List[Transition] = []
-        self._pending: Optional[_Pending] = None
+        self._open: List[Optional[_Pending]] = []
 
     # ------------------------------------------------------------------
     def _feature_for(self, link, tick: int) -> Optional[np.ndarray]:
@@ -86,70 +86,59 @@ class CalderaExperienceRecorder:
         return np.stack(feats, axis=0)
 
     # ------------------------------------------------------------------
-    def record_step(self, link, tick: int, n_facts: int):
-        """Call at the START of a step, before submitting to Caldera.
+    def record_batch(self, links, tick: int):
+        """Call before submitting a batch: one open record per link, in batch order (unmapped links get None)."""
+        self._open = []
+        for link in links:
+            feat = self._feature_for(link, tick)
+            self._open.append(None if feat is None else _Pending(feature=feat, tick=tick))
 
-        link        – the PotentialLink being executed
-        tick        – 1-based step index
-        n_facts     – number of unique facts known before this step
+    def close_batch(self, outcomes, next_links, next_tick: int, done: bool = False, objective_reached: bool = False):
+        """Call after the results of the whole batch are known.
+
+        outcomes          – (status, new_facts) per link, in the order given to record_batch
+        next_links        – shortlist for the NEXT step (empty when the run ends here)
+        next_tick         – tick value used on the next step
+        done              – True when the run ends with this batch (terminal: no bootstrap)
+        objective_reached – True only when this batch satisfied the objective. The bonus is added once, to the
+                            last mapped link; if no link in the batch is mapped, the bonus is not recorded.
         """
-        feat = self._feature_for(link, tick)
-        if feat is None:
-            self._pending = None   # unmapped technique: skip this step
-            return
-        self._pending = _Pending(feature=feat, tick=tick, n_facts_before=n_facts)
-
-    def close_step(self, status: str, n_facts_after: int,
-                   next_links, next_tick: int, objective_reached: bool = False):
-        """Call AFTER results arrive to seal the pending record.
-
-        status           – Caldera link status string ('0' = success)
-        n_facts_after    – number of unique facts known after this step
-        next_links       – shortlist for the NEXT step (used as next-state features)
-        next_tick        – tick value that will be used on the next step
-        objective_reached – True only on the step that satisfied the objective
-        """
-        if self._pending is None:
-            return
-        p = self._pending
-        self._pending = None
-
-        reward = STEP_COST
-        if status == OK_STATUS:
-            reward += SUCCESS_BONUS
-        else:
-            reward += FAIL_PENALTY
-        new_facts = max(0, n_facts_after - p.n_facts_before)
-        reward += FACT_BONUS * new_facts
-        if objective_reached:
-            reward += OBJECTIVE_BONUS
-
-        done = objective_reached
-        nxt = self._next_features(next_links, next_tick)
-        self.transitions.append(Transition(
-            feature=p.feature.copy(),
-            reward=float(reward),
-            next_features=nxt,
-            done=done,
-            duration=1,
-            mask=self._mask,
-        ))
+        open_records, self._open = self._open, []
+        if len(outcomes) != len(open_records):
+            raise ValueError(f'close_batch: {len(outcomes)} outcomes for {len(open_records)} recorded links')
+        records = [(p, status, new_facts) for p, (status, new_facts) in zip(open_records, outcomes) if p is not None]
+        done = done or objective_reached
+        for i, (p, status, new_facts) in enumerate(records):
+            reward = STEP_COST + (SUCCESS_BONUS if status == OK_STATUS else FAIL_PENALTY)
+            reward += FACT_BONUS * new_facts
+            if objective_reached and i == len(records) - 1:
+                reward += OBJECTIVE_BONUS
+            self.transitions.append(Transition(
+                feature=p.feature.copy(),
+                reward=float(reward),
+                next_features=self._next_features(next_links, next_tick),
+                done=done,
+                duration=1,
+                mask=self._mask,
+            ))
 
     def flush(self):
-        """Seal any open pending record when the run ends without a normal close_step."""
-        if self._pending is None:
-            return
-        p = self._pending
-        self._pending = None
-        # Terminal: no next actions, no extra reward — just the step cost.
-        self.transitions.append(Transition(
-            feature=p.feature.copy(),
-            reward=float(STEP_COST + FAIL_PENALTY),
-            next_features=np.zeros((0, p.feature.shape[0]), dtype=np.float32),
-            done=True,
-            duration=1,
-            mask=self._mask,
-        ))
+        """Seal records of a batch that never reached close_batch (for example after an exception).
+
+        Terminal: no next actions, only the step cost and the fail penalty.
+        """
+        open_records, self._open = self._open, []
+        for p in open_records:
+            if p is None:
+                continue
+            self.transitions.append(Transition(
+                feature=p.feature.copy(),
+                reward=float(STEP_COST + FAIL_PENALTY),
+                next_features=np.zeros((0, p.feature.shape[0]), dtype=np.float32),
+                done=True,
+                duration=1,
+                mask=self._mask,
+            ))
 
     # ------------------------------------------------------------------
     def save(self, path: Path):

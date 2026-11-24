@@ -326,7 +326,8 @@ def caldera_run():
 
     print('\nMode pemilihan aksi:')
     print('  1. LLM saja  — Ollama merencanakan dan memilih setiap langkah')
-    print('  2. RL + LLM  — RL memilih satu aksi bila yakin (gate lulus), LLM melengkapi sisa batch')
+    print('  2. RL + LLM  — RL memilih satu aksi bila yakin (gate lulus); bila tidak, LLM memilih satu aksi '
+          'yang harus disetujui separuh kepala RL')
     mode_input = input('Mode (Enter = 1): ').strip() or '1'
     use_rl = mode_input == '2'
     rl_chooser = _load_rl_chooser() if use_rl else None
@@ -388,6 +389,11 @@ def caldera_run():
             exp_path = run_dir / 'experience.npz'
             experience_recorder.save(exp_path)
             print(f'Pengalaman disimpan: {len(experience_recorder.transitions)} transisi → {exp_path}')
+            if use_rl and summary['llm_actions'] > 0:
+                from red.caldera.retrain import retrain_after_run
+                candidate = retrain_after_run(run_root, GENERAL_CKPT, run_dir / 'general_setelah_run.pt')
+                print('Retraining otomatis (langkah 10): ' + (
+                    f'kandidat disimpan ke {candidate}' if candidate else 'belum cukup transisi, tidak ada yang disimpan'))
         elif experience_recorder is not None:
             print('Tidak ada transisi yang direkam (teknik tidak terpetakan ke CAGE-4).')
 
@@ -443,7 +449,10 @@ def caldera_retrain():
         return
 
     try:
-        retrain_from_checkpoint(GENERAL_CKPT, exp_files, out_path, n_steps=n_steps)
+        saved = retrain_from_checkpoint(GENERAL_CKPT, exp_files, out_path, n_steps=n_steps)
+        if saved is None:
+            print('Tidak ada yang disimpan: pengalaman belum cukup untuk satu langkah gradien (lihat pesan di atas).')
+            return
         print(f'\nCheckpoint baru: {out_path}')
         print('Untuk menggunakannya di menu g, ganti GENERAL_CKPT di run_menu.py atau salin ke general_seed42_final.pt.')
     except FileExistsError:
