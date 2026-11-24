@@ -34,8 +34,8 @@ class LlmChooser:
         self.llm = llm
         self.acceptance = acceptance or AcceptanceGate()
 
-    def choose(self, links, stage=None, tick=0, horizon=1):
-        res = self.llm.complete(build_link_prompt(links, stage))
+    def choose(self, links, stage=None, tick=0, horizon=1, history=None):
+        res = self.llm.complete(build_link_prompt(links, stage, history))
         info = {'source': 'LLM', 'llm_ok': res.ok, 'llm_error': res.error, 'latency_s': res.latency_s}
         if not res.ok:
             info['source'] = 'llm_failed'
@@ -53,7 +53,8 @@ class RlChooser:
         self.agent = agent
         self.gate = ConfidenceGate(theta, delta)
 
-    def choose(self, links, stage=None, tick=0, horizon=1):
+    def choose(self, links, stage=None, tick=0, horizon=1, history=None):
+        # history is accepted so that every chooser has one signature; RL uses numeric features, not text.
         eligible = [i for i, l in enumerate(links) if cage_class(l.technique_id)]
         if not eligible:
             return None, {'source': 'rl_no_mapped_candidate'}
@@ -74,11 +75,11 @@ class HybridChooser:
         self.rl = rl
         self.llm = llm
 
-    def choose(self, links, stage=None, tick=0, horizon=1):
+    def choose(self, links, stage=None, tick=0, horizon=1, history=None):
         rl_idx, rl_info = self.rl.choose(links, stage, tick, horizon)
         if rl_idx is not None and rl_info.get('gate_passed'):
             return rl_idx, {**rl_info, 'route': 'RL'}
-        llm_idx, llm_info = self.llm.choose(links, stage, tick, horizon)
+        llm_idx, llm_info = self.llm.choose(links, stage, tick, horizon, history=history)
         return llm_idx, {**llm_info, 'route': 'LLM', 'rl_info': rl_info}
 
 

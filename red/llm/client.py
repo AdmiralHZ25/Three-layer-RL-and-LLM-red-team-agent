@@ -24,5 +24,6 @@ class LLMClient:
     """Interface only. Implementations return an :class:`LLMResult` and never raise on a backend failure;
     they set ``ok=False`` and an ``error`` string instead, so the pipeline can fall through deterministically."""
 
-    def complete(self, prompt: str) -> LLMResult:
+    def complete(self, prompt: str, num_predict: Optional[int] = None) -> LLMResult:
+        """``num_predict`` caps the reply length in tokens for this call. None means the client's own default."""
         raise NotImplementedError

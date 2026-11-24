@@ -6,3 +6,5 @@ runs/
 *.log
 .env
 *.gguf
+/caldera/
+/caldera-venv/

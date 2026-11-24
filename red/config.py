@@ -17,7 +17,7 @@ LLM_MODEL = os.environ.get('RED_LLM_MODEL', 'qwen3-red')        # Ollama model n
 LLM_TIMEOUT = float(os.environ.get('RED_LLM_TIMEOUT', '180'))
 
 # Caldera (Phase 2, lab only). Empty allow-lists mean nothing may run on any target.
-CALDERA_URL = os.environ.get('CALDERA_URL', 'http://127.0.0.1:8888').rstrip('/')
+CALDERA_URL = os.environ.get('CALDERA_URL', '').rstrip('/')
 CALDERA_API_KEY = os.environ.get('CALDERA_API_KEY', '')
 CALDERA_PAW = os.environ.get('CALDERA_PAW', '').strip()
 CALDERA_LAB_HOSTS = _csv('CALDERA_LAB_HOSTS')
@@ -28,3 +28,9 @@ CALDERA_SOURCE_ID = os.environ.get('CALDERA_SOURCE_ID', '')
 CALDERA_HTTP_TIMEOUT = float(os.environ.get('CALDERA_HTTP_TIMEOUT', '30'))
 CALDERA_POLL_INTERVAL = float(os.environ.get('CALDERA_POLL_INTERVAL', '1.0'))
 CALDERA_LINK_TIMEOUT = float(os.environ.get('CALDERA_LINK_TIMEOUT', '120'))
+
+# Run limits for menu g (agentic run, the LLM plans). Set once here or in the environment, not for each run. The
+# objective is written in words for each run; these are only the ceiling and the safety stops. See red/caldera/run_plan.py.
+CALDERA_RUN_MAX_STEPS = int(os.environ.get('CALDERA_RUN_MAX_STEPS', '10'))           # ceiling: 1 to 20
+CALDERA_RUN_MAX_SECONDS = float(os.environ.get('CALDERA_RUN_MAX_SECONDS', '1800'))   # ceiling for the whole run
+CALDERA_MAX_CONSECUTIVE_FAILURES = int(os.environ.get('CALDERA_MAX_CONSECUTIVE_FAILURES', '3'))

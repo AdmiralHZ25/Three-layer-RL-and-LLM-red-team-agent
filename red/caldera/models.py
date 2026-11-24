@@ -14,6 +14,7 @@ class PotentialLink:
     name: str = ""
     detectability: str = "medium"   # low/medium/high (from the technique schema)
     target: str = ""                # host of the target; "" for global actions (e.g. recon)
+    platform: str = ""             # executor platform from Caldera (e.g. "windows"); required when posting a link
     id: str = ""  # filled with the link id after it is queued
 
 

@@ -1,8 +1,9 @@
 """RED_AGENT evaluation menu: RL > Confidence Gate > LLM, validation seeds only.
 
 Run from this folder:  python run_menu.py
-No dashboard and no training. Caldera is used only for read-only checks and for planning one step
-(nothing is sent to a target). Test-split seeds (40000-40499) are refused.
+No dashboard and no training. Caldera options: k (read-only check), p (plan one step, nothing sent),
+g (the RED agent chooses each step itself, inside the scope you set).
+Test-split seeds (40000-40499) are refused.
 """
 import csv
 import json
@@ -13,6 +14,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parent
 CKPT_DIR = ROOT / 'checkpoints'
 GENERAL_CKPT = CKPT_DIR / 'general_seed42_final.pt'
@@ -20,36 +22,29 @@ SPECIALIST_CKPTS = {stage: CKPT_DIR / f'{stage}.pt' for stage in ('recon', 'adva
 GATE_LOCK = ROOT / 'configs' / 'gate_lock_2026-11-18.json'
 PROTOCOL = ROOT / 'configs' / 'protocol_2026-11-12.json'
 RUNS = ROOT / 'runs' / 'pipeline_eval'
-OLLAMA = 'http://127.0.0.1:11434'
-MODEL = 'qwen3-red'
 QUICK_SEEDS = '30000-30009'   # quick validation subset; kept out of the menu text on purpose
 
 MENU = """
 ==================================================
-   RED AGENT - EVALUATION
-   RL > Confidence Gate > LLM   (validation seeds only)
+  RED AGENT
+  Ketik satu huruf, lalu Enter.
 ==================================================
-Decision frameworks
-  a. RL-only                                   [ready]
-  b. RL + on-prem LLM                          [ready]
-  c. LLM-only                                  [ready]
-On-prem vs API LLM
-  d. API LLM only                              [needs API client]
-  e. On-prem to API assistance                 [needs API client]
-  (On-prem only is option b.)
-Single-RL vs Multi-RL
-  f. Multi-RL + LLM (Recon, Advance, Impact)   [needs trained specialists]
-  (Single-RL is option b.)
-Caldera (lab only)
-  k. Caldera read-only check                   [ready]
-  p. Caldera plan one step, no execution       [ready]
-  g. Caldera operation, unattended in scope    [ready]
-Results and tools
-  r. Results summary
-  s. System check
-  o. Ollama check
-  x. Custom run
-  q. Quit
+
+  SIMULASI  (di simulator, tidak menyentuh VM)
+    a  RL saja
+    b  RL + LLM lokal
+    c  LLM saja
+    x  Run kustom
+
+  EMULASI CALDERA  (VM lab saja, server Caldera harus jalan)
+    g  Serang otomatis: agen RED memilih aksi sendiri
+
+  CEK
+    k  Cek server dan daftar agent (hanya baca)
+    r  Ringkasan hasil
+    s  Cek instalasi
+    o  Cek Ollama (LLM lokal)
+    q  Keluar
 """
 
 NOT_READY = {
@@ -88,15 +83,24 @@ def check_install():
     return ok
 
 
+def ollama_endpoint():
+    """The same address the LLM client uses (red/llm/factory.py): RED_LLM_ENDPOINT, else this PC."""
+    from red import config as C
+    return (C.LLM_ENDPOINT or 'http://127.0.0.1:11434').split('/v1')[0].rstrip('/')
+
+
 def check_ollama():
+    from red import config as C
+    endpoint = ollama_endpoint()
+    model = C.LLM_MODEL
     try:
-        with urllib.request.urlopen(OLLAMA + '/api/tags', timeout=5) as r:
+        with urllib.request.urlopen(endpoint + '/api/tags', timeout=5) as r:
             names = [m['name'] for m in json.load(r).get('models', [])]
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        print(f'Ollama is not reachable at {OLLAMA}: {exc}')
+        print(f'Ollama is not reachable at {endpoint}: {exc}')
         return False
-    has_model = any(n.split(':')[0] == MODEL for n in names)
-    print(f"Ollama OK. Model {MODEL}: {'found' if has_model else 'NOT FOUND'}")
+    has_model = any(n.split(':')[0] == model for n in names)
+    print(f"Ollama OK at {endpoint}. Model {model}: {'found' if has_model else 'NOT FOUND'}")
     return has_model
 
 
@@ -192,12 +196,11 @@ ACTIONS = {
     'o': check_ollama,
     'x': custom,
     'k': lambda: caldera_check(),
-    'p': lambda: caldera_plan(),
     'g': lambda: caldera_run(),
 }
 
 
-CALDERA_REQUIRED = ('CALDERA_API_KEY', 'CALDERA_PAW', 'CALDERA_LAB_HOSTS', 'CALDERA_ALLOWED_ABILITY_IDS')
+CALDERA_REQUIRED = ('CALDERA_URL', 'CALDERA_API_KEY', 'CALDERA_PAW', 'CALDERA_LAB_HOSTS')
 
 
 def caldera_settings_status():
@@ -207,11 +210,10 @@ def caldera_settings_status():
     print(f"  CALDERA_API_KEY                {'set' if C.CALDERA_API_KEY else 'NOT SET'} (value is never shown)")
     print(f"  CALDERA_PAW                    {C.CALDERA_PAW or 'NOT SET'}")
     print(f"  CALDERA_LAB_HOSTS              {', '.join(C.CALDERA_LAB_HOSTS) or 'NOT SET'}")
-    print(f'  CALDERA_ALLOWED_ABILITY_IDS    {len(C.CALDERA_ALLOWED_ABILITY_IDS)} id(s)')
     ids = (C.CALDERA_ADVERSARY_ID, C.CALDERA_PLANNER_ID, C.CALDERA_SOURCE_ID)
     print(f"  adversary / planner / source   {'all set' if all(ids) else 'some empty (ad-hoc)'}")
-    values = {'CALDERA_API_KEY': C.CALDERA_API_KEY, 'CALDERA_PAW': C.CALDERA_PAW,
-              'CALDERA_LAB_HOSTS': C.CALDERA_LAB_HOSTS, 'CALDERA_ALLOWED_ABILITY_IDS': C.CALDERA_ALLOWED_ABILITY_IDS}
+    values = {'CALDERA_URL': C.CALDERA_URL, 'CALDERA_API_KEY': C.CALDERA_API_KEY, 'CALDERA_PAW': C.CALDERA_PAW,
+              'CALDERA_LAB_HOSTS': C.CALDERA_LAB_HOSTS}
     return [name for name in CALDERA_REQUIRED if not values[name]]
 
 
@@ -242,91 +244,141 @@ def caldera_check():
             print(f'CALDERA_PAW check failed: {exc}')
 
 
-def caldera_plan():
-    """Plan ONE step: the LLM picks one allowed ability on the agent. Nothing is sent to the target."""
-    from red import config as C
-    from red.caldera.client import CalderaClient, CalderaError
-    from red.caldera.executor import CalderaExecutor
-    from red.llm import make_llm
-    print('Caldera settings:')
-    missing = caldera_settings_status()
-    if missing:
-        print('Not set: ' + ', '.join(missing) + '. Nothing was contacted.')
-        return
-    stage = input('Stage (recon / advance / impact, Enter = recon): ').strip().lower() or 'recon'
-    client = CalderaClient()
+def _choose_agent(client):
+    """Step 1: list the agents on the server and let the operator pick one. Returns the agent or None."""
+    print('\nLangkah 1 dari 4: pilih agent.')
+    agents = client.list_agents()
+    if not agents:
+        print('Server belum punya agent. Pasang agent di VM dulu (perintah deploy dari GUI Caldera).')
+        return None
+    for i, a in enumerate(agents, 1):
+        print(f"  {i:>2}. {a.get('host')}   platform={a.get('platform')}   status={a.get('status')}   "
+              f"trusted={a.get('trusted')}   privilege={a.get('privilege')}")
+    text = input('Nomor agent (Enter = batal): ').strip()
+    if not text:
+        return None
+    if not (text.isdigit() and 1 <= int(text) <= len(agents)):
+        print('Nomor tidak ada di daftar.')
+        return None
+    agent = agents[int(text) - 1]
+    if not agent.get('paw'):
+        print('Agent ini tidak punya paw. Pilih agent lain.')
+        return None
+    if agent.get('status') != 'alive':
+        print('Peringatan: agent ini belum alive. Operasi akan menunggu sampai agent hidup.')
+    return agent
+
+
+def _ask_objective():
+    """Ask for the objective in words. Enter = cancel. Returns the text or None."""
+    print('\nTujuan operasi, dalam bahasa biasa.')
+    print('Contoh: Temukan domain controller dan satu user yang bisa dipakai di jaringan lab.')
+    text = input('Tujuan (Enter = batal): ').strip()
+    return text or None
+
+
+def _load_rl_chooser():
+    """Load the RL agent and return an RlChooser, or None if unavailable."""
+    if not GENERAL_CKPT.exists():
+        print(f'Checkpoint tidak ditemukan: {GENERAL_CKPT.relative_to(ROOT)}. Pakai mode LLM saja.')
+        return None
+    if not GATE_LOCK.exists():
+        print(f'Gate lock tidak ditemukan: {GATE_LOCK.relative_to(ROOT)}. Pakai mode LLM saja.')
+        return None
     try:
-        client.check_paw(C.CALDERA_PAW)
-        with client.operation('red-plan-only') as op_id:      # always finished again on exit
-            links = client.get_candidates(op_id, C.CALDERA_PAW)
-            print(f'Allowed abilities on this agent: {len(links)}')
-            for i, link in enumerate(links):
-                print(f'  {i}. {link.name or link.ability_id} [{link.technique_id} {link.tactic}] target={link.target or "-"}')
-            if not links:
-                print('No allowed ability can run on this agent. Nothing was planned.')
-                return
-            rec = CalderaExecutor(client, make_llm()).step(op_id, C.CALDERA_PAW, stage=stage, execute=False)
-            print(f'PLANNED, NOT EXECUTED: ability {rec.ability_id} [{rec.technique_id}], chosen by {rec.source}.')
-            if rec.source == 'fallback':
-                print('The LLM gave no usable answer, so the first candidate was taken. Check the LLM first (option o).')
-    except CalderaError as exc:
-        print(f'Caldera: {exc}')
+        from red.agents.rl import MultiHeadAgent
+        from red.caldera.choosers import RlChooser, read_gate_lock
+        agent = MultiHeadAgent.load(GENERAL_CKPT)
+        agent.online.eval()
+        theta, delta = read_gate_lock(GATE_LOCK)
+        print(f'RL agent dimuat dari {GENERAL_CKPT.name}. Gate: tau≥{theta}, sigma≤{delta}.')
+        return RlChooser(agent, theta, delta)
+    except Exception as exc:
+        print(f'RL agent gagal dimuat: {exc}. Pakai mode LLM saja.')
+        return None
 
 
 def caldera_run():
-    """Start an operation that acts without asking for each step, but only inside the scope set in the environment."""
+    """Agentic operation. The person chooses the agent and writes the objective. The LLM plans and chooses each step
+    from what the server offers, inside the scope. One confirmation (1) starts the run. Nothing is asked during the run."""
     from red import config as C
-    from red.caldera.choosers import MODES, make_chooser, read_gate_lock
+    from red.caldera.action_scope import FORBIDDEN_NAME_WORDS, FORBIDDEN_TACTICS
+    from red.caldera.agent_loop import run_agentic
     from red.caldera.client import CalderaClient, CalderaError
-    from red.caldera.runner import run_operation
-    from red.caldera.scope import Scope, ScopeViolation
-    print('Caldera settings:')
-    missing = caldera_settings_status()
-    if missing:
-        print('Not set: ' + ', '.join(missing) + '. Nothing was contacted.')
+    from red.caldera.run_plan import check_run_settings
+    from red.caldera.scope import ScopeViolation
+    from red.llm import make_llm
+    print('\n=== OPERASI AGENTIK: agen RED memilih aksi sendiri ===')
+    print('Server Caldera harus sudah jalan.')
+    if not C.CALDERA_URL or not C.CALDERA_API_KEY:
+        print('Set dulu CALDERA_URL dan CALDERA_API_KEY di terminal ini. Tidak ada yang dihubungi.')
         return
-    mode = input(f"Mode ({' / '.join(MODES)}, Enter = rl+llm): ").strip().lower() or 'rl+llm'
-    if mode not in MODES:
-        print('Unknown mode. Nothing was started.')
-        return
-    stage = input('Stage (recon / advance / impact, Enter = recon): ').strip().lower() or 'recon'
-    budget = input('Step budget, 1 to 20 (Enter = 3): ').strip() or '3'
-    run_root = ROOT / 'runs' / 'caldera'
     try:
-        scope = Scope(paw=C.CALDERA_PAW, lab_hosts=C.CALDERA_LAB_HOSTS,
-                      allowed_abilities=frozenset(C.CALDERA_ALLOWED_ABILITY_IDS),
-                      max_steps=int(budget), stop_file=run_root / 'STOP')
+        check_run_settings(C.CALDERA_RUN_MAX_STEPS, C.CALDERA_RUN_MAX_SECONDS, C.CALDERA_MAX_CONSECUTIVE_FAILURES)
     except ValueError as exc:
-        print(f'Scope refused: {exc}. Nothing was started.')
+        print(f'Batas di config tidak sah: {exc}. Tidak ada yang dihubungi.')
         return
-    print(f'Scope: paw {C.CALDERA_PAW}, lab hosts {", ".join(C.CALDERA_LAB_HOSTS)}, '
-          f'{len(scope.allowed_abilities)} allowed abilities, at most {scope.max_steps} steps, mode {mode}.')
-    print(f'To stop early, create this file: {scope.stop_file}')
-    if input('Type JALANKAN to start (anything else cancels): ').strip() != 'JALANKAN':
-        print('Cancelled. Nothing was started.')
+    if not check_ollama():
+        print('Dibatalkan: Ollama atau model belum siap. Cek dengan pilihan o.')
         return
-    llm = agent = None
-    theta = delta = None
-    if mode in ('llm', 'rl+llm'):
-        if not check_ollama():
-            print('Cancelled: Ollama or the model is not ready.')
-            return
-        from red.llm import make_llm
-        llm = make_llm()
-    if mode in ('rl', 'rl+llm'):
-        from red.pipeline.wiring import load_agents
-        agent = load_agents({'general': str(GENERAL_CKPT)})['general']
-        theta, delta = read_gate_lock(GATE_LOCK)
-    chooser = make_chooser(mode, llm=llm, agent=agent, theta=theta, delta=delta)
-    run_dir = run_root / datetime.now().strftime('%Y%m%d-%H%M%S')
+
+    print('\nMode pemilihan aksi:')
+    print('  1. LLM saja  — Ollama merencanakan dan memilih setiap langkah')
+    print('  2. RL + LLM  — RL memilih satu aksi bila yakin (gate lulus), LLM melengkapi sisa batch')
+    mode_input = input('Mode (Enter = 1): ').strip() or '1'
+    use_rl = mode_input == '2'
+    rl_chooser = _load_rl_chooser() if use_rl else None
+    if use_rl and rl_chooser is None:
+        use_rl = False   # fell back to LLM-only due to load error
+
     client = CalderaClient()
     try:
+        agent = _choose_agent(client)
+        if agent is None:
+            print('Dibatalkan. Tidak ada yang dikirim.')
+            return
+        objective = _ask_objective()
+        if objective is None:
+            print('Dibatalkan. Tidak ada yang dikirim.')
+            return
+        run_root = ROOT / 'runs' / 'caldera'
+        mode_label = 'RL + LLM (gate: RL memilih dulu bila yakin)' if use_rl else f'LLM saja ({C.LLM_MODEL})'
+        print('\nRingkasan')
+        print(f"  agent     : {agent['host']}   (paw {agent['paw']})")
+        print(f'  tujuan    : {objective}')
+        print(f'  mode      : {mode_label}')
+        print(f"  batas     : {C.CALDERA_RUN_MAX_STEPS} langkah, {int(C.CALDERA_RUN_MAX_SECONDS)} detik, "
+              f'berhenti setelah {C.CALDERA_MAX_CONSECUTIVE_FAILURES} gagal berturut-turut   (dari config)')
+        blocked_tactics = ', '.join(sorted(FORBIDDEN_TACTICS)) or 'tidak ada'
+        print(f"  blokir    : taktik {blocked_tactics}; nama yang memuat {', '.join(FORBIDDEN_NAME_WORDS)}")
+        print(f"  berhenti  : buat file {run_root / 'STOP'}")
+        print('Agen memilih dan mengirim sendiri. Tidak ada konfirmasi per langkah.')
+        if input('Ketik 1 untuk jalankan, Enter untuk batal: ').strip() != '1':
+            print('Dibatalkan. Tidak ada yang dikirim.')
+            return
+        # Used only for this run: the check in client.check_paw reads these settings.
+        C.CALDERA_PAW = agent['paw']
+        C.CALDERA_LAB_HOSTS = (agent['host'],)
         client.check_paw(C.CALDERA_PAW)
-        summary = run_operation(client, scope, chooser, mode, stage, run_dir)
+        llm = make_llm()
+        run_dir = run_root / datetime.now().strftime('%Y%m%d-%H%M%S')
+        print('\nMulai. Setiap langkah dicetak di bawah.')
+        summary = run_agentic(client, llm, objective, C.CALDERA_PAW, C.CALDERA_LAB_HOSTS, run_dir,
+                              stop_file=run_root / 'STOP', max_steps=C.CALDERA_RUN_MAX_STEPS,
+                              max_seconds=C.CALDERA_RUN_MAX_SECONDS,
+                              max_failures=C.CALDERA_MAX_CONSECUTIVE_FAILURES,
+                              rl_chooser=rl_chooser)
+        if summary['objective_reached']:
+            print(f"\nSelesai. Tujuan tercapai. Bukti dari output: {summary['evidence']}")
+        else:
+            print(f"\nSelesai. Tujuan belum tercapai. Langkah terkirim: {summary['steps_sent']}. "
+                  f"Alasan berhenti: {summary['stop']}.")
+        print(f'Log: {run_dir}')
+        print('Operasi di Caldera sudah ditutup. Caldera bisa menjalankan cleanup untuk aksi yang sudah dijalankan.')
     except (CalderaError, ScopeViolation, ValueError) as exc:
-        print(f'Stopped: {exc}')
-        return
-    print(f"Done. Steps sent: {summary['steps_sent']}. Stop reason: {summary['stop']}. Log folder: {run_dir}")
+        print(f'Berhenti: {exc}')
+    except KeyboardInterrupt:
+        print('\nDihentikan.')
 
 
 def main():

@@ -24,14 +24,18 @@ STAGE_TACTICS = {
 }
 
 
-def build_link_prompt(links, stage=None):
-    """Numbered prompt over the live Caldera candidates (ability name, technique, tactic, target)."""
+def build_link_prompt(links, stage=None, history=None):
+    """Numbered prompt over the live Caldera candidates (ability name, technique, tactic, target).
+    ``history`` is optional text from RunMemory.history_text(). It is already labelled as data, and it goes before
+    the numbered list so that the numbers belong to the candidates only. None or '' gives the same prompt as before."""
     lines = ['You are the red agent executing on a real target via Caldera.',
              'Choose exactly one ability from the numbered candidates.',
              'Reply with exactly one line: ACTION: <index>']
     if stage:
         tactics = ', '.join(STAGE_TACTICS.get(stage, ())) or 'any'
         lines.append(f'Current stage: {stage} (prefer tactics: {tactics}).')
+    if history:
+        lines.append(history)
     lines.append('')
     for i, l in enumerate(links):
         label = l.name or l.ability_id

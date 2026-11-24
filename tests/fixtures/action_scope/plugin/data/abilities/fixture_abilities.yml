@@ -1,0 +1,74 @@
+- id: fx-win-discovery
+  name: Fixture list directory
+  tactic: discovery
+  technique:
+    attack_id: T1083
+    name: File and Directory Discovery
+  platforms:
+    windows:
+      psh:
+        command: echo fixture
+
+- id: fx-linux-discovery
+  name: Fixture print user
+  tactic: discovery
+  technique:
+    attack_id: T1033
+    name: System Owner/User Discovery
+  platforms:
+    linux:
+      sh:
+        command: echo fixture
+
+- id: fx-win-evasion
+  name: Fixture hide file
+  tactic: Defense Evasion
+  technique:
+    attack_id: T1564
+    name: Hide Artifacts
+  platforms:
+    windows:
+      psh:
+        command: echo fixture
+
+- id: fx-win-defender
+  name: Query Defender status
+  tactic: discovery
+  technique:
+    attack_id: T1518
+    name: Software Discovery
+  platforms:
+    windows:
+      psh:
+        command: echo fixture
+
+- id: fx-mixed-platforms
+  name: Fixture print host
+  tactic: discovery
+  technique:
+    attack_id: T1082
+    name: System Information Discovery
+  platforms:
+    darwin,linux:
+      sh:
+        command: echo fixture
+
+- id: fx-executors-windows
+  name: Fixture list processes
+  tactic: discovery
+  technique_id: T1057
+  executors:
+    - platform: windows
+      name: psh
+      command: echo fixture
+
+- id: fx-clear-logs
+  name: Clear Fixture Logs
+  tactic: discovery
+  technique:
+    attack_id: T1070
+    name: Indicator Removal
+  platforms:
+    windows:
+      psh:
+        command: echo fixture

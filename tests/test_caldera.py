@@ -81,6 +81,30 @@ class ClientGuards(unittest.TestCase):
             with self.assertRaises(CalderaError):
                 CalderaClient(api_key='x').check_paw('p1')
 
+    def test_empty_caldera_url_is_refused_before_any_request(self):
+        with mock.patch.object(config, 'CALDERA_URL', ''):
+            client = CalderaClient(api_key='x')
+        with mock.patch('urllib.request.urlopen', side_effect=AssertionError('network used')):
+            with self.assertRaises(CalderaError):
+                client._req('GET', '/agents')
+
+    def test_create_operation_refuses_adversary_planner_or_source(self):
+        names = ('CALDERA_ADVERSARY_ID', 'CALDERA_PLANNER_ID', 'CALDERA_SOURCE_ID')
+        for name in names:
+            with self.subTest(name=name):
+                values = {n: ('x' if n == name else '') for n in names}
+                with mock.patch.multiple(config, **values), \
+                        mock.patch.object(CalderaClient, '_req', side_effect=AssertionError('sent')):
+                    with self.assertRaises(CalderaError):
+                        CalderaClient(api_key='x').create_operation()
+
+    def test_create_operation_with_empty_ids_sends_one_post(self):
+        with mock.patch.multiple(config, CALDERA_ADVERSARY_ID='', CALDERA_PLANNER_ID='', CALDERA_SOURCE_ID=''), \
+                mock.patch.object(CalderaClient, '_req', return_value={'id': 'op-1'}) as req:
+            self.assertEqual(CalderaClient(api_key='x').create_operation(), 'op-1')
+        req.assert_called_once()
+        self.assertEqual(req.call_args.args[0], 'POST')
+
 
 class _FakeCaldera(http.server.BaseHTTPRequestHandler):
     """A local stand-in for the Caldera REST API on 127.0.0.1 (not the lab)."""
