@@ -16,7 +16,7 @@ import numpy as np
 from red.simulator.chooser import Choice
 from red.router.snapshot import GENERAL
 
-from .stage_mask import stage_action_mask
+from .stage_mask import STAGES, stage_action_mask
 
 
 class StageSpecialists:
@@ -91,3 +91,29 @@ class SpecialistEpsilonGreedyChooser:
         mh = agent.cfg.main_head if self.main_head is None else self.main_head
         q = agent.q_matrix([c[2] for c in candidates])[:, mh].detach().cpu().numpy().astype(np.float64)
         return Choice(index=int(np.argmax(np.where(mask, q, -np.inf))), source='rl:' + routed, meta=meta)
+
+
+def max_q_stage_provider(specialists, main_head=None):
+    """Stage provider with no stage prediction (decision 25 Nov 2026: 'Nilai Q tertinggi').
+
+    Every specialist scores the candidates that its action types own (STAGE_ACTIONS; Sleep is shared) with its main
+    head. The stage of the best-scoring candidate over all specialists is returned, and the chooser routes the step
+    to that specialist. The stage comes from the action type, never from the situation: no predicate, no router.
+    Returns None when no specialist can score any candidate, which routes the step to 'general'. Ties go to the first
+    stage in STAGES order, so the result is deterministic."""
+    def provider(candidates, knowledge=None, tick=None):
+        best_stage, best_q = None, -np.inf
+        for stage in STAGES:
+            agent = specialists.agent_for(stage)
+            if agent is None:
+                continue
+            mask = stage_action_mask(candidates, stage)
+            if not mask.any():
+                continue
+            mh = agent.cfg.main_head if main_head is None else main_head
+            q = agent.q_matrix([c[2] for c in candidates])[:, mh].detach().cpu().numpy().astype(np.float64)
+            value = float(np.max(np.where(mask, q, -np.inf)))
+            if value > best_q:
+                best_stage, best_q = stage, value
+        return best_stage
+    return provider

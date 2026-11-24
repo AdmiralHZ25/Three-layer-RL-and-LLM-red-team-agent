@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
+from red.agents.stages import StageSpecialists, max_q_stage_provider
 from red.pipeline.wiring import build_rl_chooser, load_agents
 from red.simulator import cage4 as v3
 from red.simulator.episode import episode
@@ -110,6 +111,8 @@ def build_parser():
     p.add_argument('--llm-only', action='store_true',
                    help='LLM-only framework: the LLM chooses every step (needs --llm); no RL pick is used')
     p.add_argument('--stage', help='fixed stage instead of the Stage Router (diagnostic use)')
+    p.add_argument('--select', choices=('stage', 'maxq'), default='stage',
+                   help="'stage' = Stage Router (or --stage); 'maxq' = specialist with the highest main-head Q, no stage prediction")
     p.add_argument('--gate-lock', type=Path, default=ROOT / 'configs' / 'gate_lock_2026-11-18.json')
     p.add_argument('--protocol', type=Path, default=ROOT / 'configs' / 'protocol_2026-11-12.json')
     p.add_argument('--open-new-test', action='store_true', help='allow seeds in the new_test range (once only)')
@@ -149,10 +152,15 @@ def main(argv=None):
     if a.llm:
         from red.llm.factory import make_llm
         llm = make_llm(a.llm)
-    stage = a.stage or router_stage_provider(StageRouter(), runtime.steps)
+    if a.select == 'maxq':
+        if a.stage:
+            raise SystemExit('--select maxq cannot be combined with --stage')
+        stage = max_q_stage_provider(StageSpecialists(agents))
+    else:
+        stage = a.stage or router_stage_provider(StageRouter(), runtime.steps)
     summary = evaluate(lambda: build_rl_chooser(agents, stage, theta, delta, llm_local=llm, llm_only=a.llm_only),
                        seeds, runtime, a.output_dir,
-                       extra={'theta': theta, 'delta': delta, 'llm_only': a.llm_only})
+                       extra={'theta': theta, 'delta': delta, 'llm_only': a.llm_only, 'select': a.select})
     print('EVAL SUMMARY', summary, flush=True)
     return 0
 
