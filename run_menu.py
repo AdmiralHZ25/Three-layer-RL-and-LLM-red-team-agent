@@ -38,6 +38,7 @@ MENU = """
 
   EMULASI CALDERA  (VM lab saja, server Caldera harus jalan)
     g  Serang otomatis: agen RED memilih aksi sendiri
+    h  Fine-tune RL dari pengalaman Caldera yang sudah direkam
 
   CEK
     k  Cek server dan daftar agent (hanya baca)
@@ -197,6 +198,7 @@ ACTIONS = {
     'x': custom,
     'k': lambda: caldera_check(),
     'g': lambda: caldera_run(),
+    'h': lambda: caldera_retrain(),
 }
 
 
@@ -286,9 +288,9 @@ def _load_rl_chooser():
         print(f'Gate lock tidak ditemukan: {GATE_LOCK.relative_to(ROOT)}. Pakai mode LLM saja.')
         return None
     try:
-        from red.agents.rl import MultiHeadAgent
+        from red.agents.rl import MultiHeadDDQNAgent
         from red.caldera.choosers import RlChooser, read_gate_lock
-        agent = MultiHeadAgent.load(GENERAL_CKPT)
+        agent = MultiHeadDDQNAgent.load(GENERAL_CKPT)
         agent.online.eval()
         theta, delta = read_gate_lock(GATE_LOCK)
         print(f'RL agent dimuat dari {GENERAL_CKPT.name}. Gate: tau≥{theta}, sigma≤{delta}.')
@@ -362,12 +364,33 @@ def caldera_run():
         client.check_paw(C.CALDERA_PAW)
         llm = make_llm()
         run_dir = run_root / datetime.now().strftime('%Y%m%d-%H%M%S')
+
+        # Optionally record experiences for later RL fine-tuning (menu h).
+        record_exp = input('Rekam pengalaman untuk fine-tuning RL? (y/Enter = ya, n = tidak): ').strip().lower()
+        experience_recorder = None
+        if record_exp != 'n':
+            from red.caldera.experience import CalderaExperienceRecorder
+            experience_recorder = CalderaExperienceRecorder(
+                max_steps=C.CALDERA_RUN_MAX_STEPS,
+                heads=5,
+            )
+            print('Pengalaman akan direkam ke experience.npz di folder run.')
+
         print('\nMulai. Setiap langkah dicetak di bawah.')
         summary = run_agentic(client, llm, objective, C.CALDERA_PAW, C.CALDERA_LAB_HOSTS, run_dir,
                               stop_file=run_root / 'STOP', max_steps=C.CALDERA_RUN_MAX_STEPS,
                               max_seconds=C.CALDERA_RUN_MAX_SECONDS,
                               max_failures=C.CALDERA_MAX_CONSECUTIVE_FAILURES,
-                              rl_chooser=rl_chooser)
+                              rl_chooser=rl_chooser,
+                              experience_recorder=experience_recorder)
+
+        if experience_recorder is not None and experience_recorder.transitions:
+            exp_path = run_dir / 'experience.npz'
+            experience_recorder.save(exp_path)
+            print(f'Pengalaman disimpan: {len(experience_recorder.transitions)} transisi → {exp_path}')
+        elif experience_recorder is not None:
+            print('Tidak ada transisi yang direkam (teknik tidak terpetakan ke CAGE-4).')
+
         if summary['objective_reached']:
             print(f"\nSelesai. Tujuan tercapai. Bukti dari output: {summary['evidence']}")
         else:
@@ -379,6 +402,54 @@ def caldera_run():
         print(f'Berhenti: {exc}')
     except KeyboardInterrupt:
         print('\nDihentikan.')
+
+
+def caldera_retrain():
+    """Fine-tune the RL agent from recorded Caldera emulation experiences (menu h).
+
+    Scans runs/caldera/*/experience.npz for experience files, loads the general
+    checkpoint, runs gradient steps, and saves a new versioned checkpoint.
+    """
+    from red.caldera.retrain import retrain_from_checkpoint
+
+    run_root = ROOT / 'runs' / 'caldera'
+    exp_files = sorted(run_root.glob('*/experience.npz'))
+    if not exp_files:
+        print('Tidak ada file experience.npz di runs/caldera/*/. Jalankan satu operasi agentik (g) dulu.')
+        return
+
+    print(f'Ditemukan {len(exp_files)} file pengalaman:')
+    for p in exp_files:
+        print(f'  {p.relative_to(ROOT)}')
+
+    if not GENERAL_CKPT.exists():
+        print(f'Checkpoint tidak ditemukan: {GENERAL_CKPT.relative_to(ROOT)}.')
+        print('Latih dulu agen RL di simulasi (jalankan red.train atau pipeline CAGE-4).')
+        return
+
+    # Build a new versioned checkpoint name.
+    existing = sorted(CKPT_DIR.glob('general_seed42_ft*.pt'))
+    next_ver = len(existing) + 1
+    out_path = CKPT_DIR / f'general_seed42_ft{next_ver}.pt'
+
+    steps_text = input(f'Berapa langkah gradien? (Enter = 500): ').strip()
+    n_steps = int(steps_text) if steps_text.isdigit() and int(steps_text) > 0 else 500
+
+    print(f'\nCheckpoint sumber : {GENERAL_CKPT.name}')
+    print(f'Checkpoint output : {out_path.name}')
+    print(f'Langkah gradien   : {n_steps}')
+    if input('Jalankan fine-tuning? (1 = ya, Enter = batal): ').strip() != '1':
+        print('Dibatalkan.')
+        return
+
+    try:
+        retrain_from_checkpoint(GENERAL_CKPT, exp_files, out_path, n_steps=n_steps)
+        print(f'\nCheckpoint baru: {out_path}')
+        print('Untuk menggunakannya di menu g, ganti GENERAL_CKPT di run_menu.py atau salin ke general_seed42_final.pt.')
+    except FileExistsError:
+        print(f'File sudah ada: {out_path}. Hapus dulu atau gunakan nama lain.')
+    except Exception as exc:
+        print(f'Fine-tuning gagal: {type(exc).__name__}: {exc}')
 
 
 def main():

@@ -145,7 +145,7 @@ def _finish(run_dir, summary):
 
 
 def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_steps, max_seconds=None,
-                max_failures=3, rl_chooser=None, log=print):
+                max_failures=3, rl_chooser=None, experience_recorder=None, log=print):
     objective = (objective or '').strip()
     if not objective:
         raise ValueError('the objective is empty')
@@ -253,6 +253,11 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
                     _log(steps, step, link, {'batch_size': len(batch), 'reply': reply[:300]}, 'not sent')
                 break
             choice_base = {'batch_size': len(batch), 'reply': reply[:300], 'rl_info': rl_step_info}
+            # Record step start for experience collection (before submission).
+            n_facts_before = len(memory.facts)
+            if experience_recorder is not None:
+                for link in batch:
+                    experience_recorder.record_step(link, tick=step, n_facts=n_facts_before)
             link_ids = [client.submit(op_id, link, allowed=set(ids)) for link in batch]
             statuses = [client.wait(op_id, link_id) for link_id in link_ids]
             summary['steps_sent'] += len(batch)
@@ -290,12 +295,21 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
             summary['failures'] += sum(1 for status in statuses if status != OK_STATUS)
             if verifying:
                 # The check step did not show the objective: stop instead of acting on an unproven claim.
-                if check and check['verified']:
+                verify_ok = bool(check and check['verified'])
+                if verify_ok:
                     summary['objective_reached'] = True
                     summary['evidence'] = check['evidence']
                     summary['stop'] = 'objective_reached'
                 else:
                     summary['stop'] = 'objective_unverified'
+                if experience_recorder is not None:
+                    n_facts_after = len(memory.facts)
+                    for link, status in zip(batch, statuses):
+                        experience_recorder.close_step(
+                            status=status, n_facts_after=n_facts_after,
+                            next_links=[], next_tick=step + 1,
+                            objective_reached=verify_ok,
+                        )
                 break
             if not succeeded:
                 consecutive += 1
@@ -304,10 +318,27 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
                     break
                 continue
             consecutive = 0
-            if check and check['verified']:
+            step_objective_reached = bool(check and check['verified'])
+            if step_objective_reached:
                 summary['objective_reached'] = True
                 summary['evidence'] = check['evidence']
                 summary['stop'] = 'objective_reached'
+            # Close experience records for this step now that outcome is known.
+            if experience_recorder is not None:
+                next_links_for_exp = shortlist(
+                    memory.mask(offered_links(client.get_all_candidates(op_id, paw), frozenset(blocked))),
+                    objective, plan, SHORTLIST_SIZE,
+                ) if not step_objective_reached else []
+                n_facts_after = len(memory.facts)
+                for link, status in zip(batch, statuses):
+                    experience_recorder.close_step(
+                        status=status,
+                        n_facts_after=n_facts_after,
+                        next_links=next_links_for_exp,
+                        next_tick=step + 1,
+                        objective_reached=step_objective_reached,
+                    )
+            if step_objective_reached:
                 break
             if check and check['done']:
                 # The planner claims the objective, but the output does not show it. The next step may only check.
@@ -315,5 +346,7 @@ def run_agentic(client, llm, objective, paw, lab_hosts, run_dir, stop_file, max_
                 summary['unverified_claims'] += 1
         else:
             summary['stop'] = 'budget_used'
+    if experience_recorder is not None:
+        experience_recorder.flush()
     _finish(run_dir, summary)
     return summary
