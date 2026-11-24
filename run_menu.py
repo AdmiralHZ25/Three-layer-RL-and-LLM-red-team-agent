@@ -17,7 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 CKPT_DIR = ROOT / 'checkpoints'
-GENERAL_CKPT = CKPT_DIR / 'general_seed42_final.pt'
+# Baseline 13 Nov 2026 (mhddqn_v2 seed 42, sha256 56da5d77...). The gate lock was calibrated on these runs.
+GENERAL_CKPT = CKPT_DIR / 'general_baseline_seed42_2026-11-13.pt'
 SPECIALIST_CKPTS = {stage: CKPT_DIR / f'{stage}.pt' for stage in ('recon', 'advance', 'impact')}
 GATE_LOCK = ROOT / 'configs' / 'gate_lock_2026-11-18.json'
 PROTOCOL = ROOT / 'configs' / 'protocol_2026-11-12.json'
@@ -293,7 +294,8 @@ def _load_rl_chooser():
         agent = MultiHeadDDQNAgent.load(GENERAL_CKPT)
         agent.online.eval()
         theta, delta = read_gate_lock(GATE_LOCK)
-        print(f'RL agent dimuat dari {GENERAL_CKPT.name}. Gate: tau≥{theta}, sigma≤{delta}.')
+        # ASCII only: a non-UTF-8 stdout raised here and silently disabled RL mode.
+        print(f'RL agent dimuat dari {GENERAL_CKPT.name}. Gate: tau>={theta}, sigma<={delta}.')
         return RlChooser(agent, theta, delta)
     except Exception as exc:
         print(f'RL agent gagal dimuat: {exc}. Pakai mode LLM saja.')
@@ -454,7 +456,7 @@ def caldera_retrain():
             print('Tidak ada yang disimpan: pengalaman belum cukup untuk satu langkah gradien (lihat pesan di atas).')
             return
         print(f'\nCheckpoint baru: {out_path}')
-        print('Untuk menggunakannya di menu g, ganti GENERAL_CKPT di run_menu.py atau salin ke general_seed42_final.pt.')
+        print('Untuk menggunakannya di menu g, ganti GENERAL_CKPT di run_menu.py.')
     except FileExistsError:
         print(f'File sudah ada: {out_path}. Hapus dulu atau gunakan nama lain.')
     except Exception as exc:
