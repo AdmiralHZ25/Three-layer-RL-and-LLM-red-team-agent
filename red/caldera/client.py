@@ -6,6 +6,7 @@ get_candidates (changes the operation's potential links), submit (sends a comman
 Endpoints and fields were checked against the Caldera 5.3 source; [VERIFY] marks what must be checked once
 the server is running.
 """
+import base64
 import json
 import time
 import urllib.error
@@ -38,6 +39,8 @@ class CalderaClient:
     def _req(self, method, path, body=None):
         if not (self.key or "").strip():
             raise CalderaError("CALDERA_API_KEY is not set (set it as an environment variable)")
+        if not self.base:
+            raise CalderaError("CALDERA_URL is not set (set it as an environment variable)")
         url = f"{self.base}/api/v2{path}"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(
@@ -51,6 +54,9 @@ class CalderaClient:
             raise CalderaError(f"{method} {path} -> {e.code} {e.read().decode(errors='ignore')}")
         except urllib.error.URLError as e:
             raise CalderaError(f"{method} {path} -> {e}")
+        except (TimeoutError, OSError) as e:
+            # The server did not answer in time (socket read timeout). The menu shows this as an error, not a crash.
+            raise CalderaError(f"{method} {path} -> no answer in {self.timeout:.0f} s ({e})")
 
     # --- read-only ---
     def list_agents(self):
@@ -98,23 +104,54 @@ class CalderaClient:
         allowed = set(config.CALDERA_ALLOWED_ABILITY_IDS)
         if not allowed:
             return []
+        return [pl for pl in self._potential(op_id, paw) if pl.ability_id in allowed]
+
+    def get_all_candidates(self, op_id, paw):
+        """Every link the server offers for this paw, with no allow-list. The agentic run (menu g) filters them itself."""
+        return self._potential(op_id, paw)
+
+    def _potential(self, op_id, paw):
         links = self._req("GET", f"/operations/{op_id}/potential-links/{paw}")
         out = []
         for l in links or []:
             ab = l.get("ability", {}) or {}
-            if ab.get("ability_id", "") not in allowed:
-                continue
             ex = l.get("executor", {}) or {}
             out.append(PotentialLink(
                 paw=l.get("paw", paw),
                 ability_id=ab.get("ability_id", ""),
                 executor=ex.get("name", "sh"),
                 command=ex.get("command", ""),
+                platform=ex.get("platform", "") or "",
                 tactic=ab.get("tactic", ""),
                 technique_id=ab.get("technique_id", ""),
                 name=ab.get("name", ""),
                 target=l.get("host", "")))
         return out
+
+    def get_link_result(self, op_id, link_id):
+        """GET /operations/{id}/links/{link}/result, returned as plain text.
+
+        Caldera (file_svc.read_result_file) sends the result as base64 text of a JSON dict {stdout, stderr,
+        exit_code}; an empty string means no result yet. Decoding: base64, then JSON, then stdout (stderr follows on
+        its own line). If base64 fails, the text is used as it is. Checked against the Caldera source only; stdout is
+        read as plain text, not as a second base64 layer [BELUM TERVERIFIKASI on a running server]."""
+        res = self._req("GET", f"/operations/{op_id}/links/{link_id}/result")
+        blob = (res.get("result") or "") if isinstance(res, dict) else ""
+        if not blob:
+            return ""
+        try:
+            raw = base64.b64decode(blob, validate=True).decode("utf-8")
+        except ValueError:  # binascii.Error and UnicodeDecodeError are both ValueError
+            return blob
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return raw
+        if not isinstance(data, dict):
+            return raw
+        out = str(data.get("stdout") or "")
+        err = str(data.get("stderr") or "")
+        return f"{out}\n[stderr] {err}" if err else out
 
     # --- operation lifecycle (creates state on the server) ---
     def create_operation(self, name="red-episode"):
@@ -127,7 +164,14 @@ class CalderaClient:
             "source": {"id": config.CALDERA_SOURCE_ID},
             "autonomous": 1,
             "state": "running",
+            # Caldera's default is auto_close=True. With no adversary the planner finishes at once, and then the
+            # operation closes. A closed operation no longer hands links to agents, and posting a link to it hangs.
+            "auto_close": False,
         }
+        # Refused here, before any request: an adversary or planner can run actions on the server outside the allow-list.
+        filled = [n for n in ('CALDERA_ADVERSARY_ID', 'CALDERA_PLANNER_ID', 'CALDERA_SOURCE_ID') if getattr(config, n)]
+        if filled:
+            raise CalderaError(f"{', '.join(filled)} must be empty; leave them unset so only the allow-list can run")
         op = self._req("POST", "/operations", body)
         return op.get("id")
 
@@ -150,15 +194,21 @@ class CalderaClient:
                     raise
 
     # --- action (sends a command to an agent) ---
-    def submit(self, op_id, pl):
-        """POST a potential link. Refuses any ability not in CALDERA_ALLOWED_ABILITY_IDS, and any paw that
-        fails check_paw. Required fields: paw, executor name, executor command."""
+    def submit(self, op_id, pl, allowed=None):
+        """POST a potential link. Refuses any ability not in the allow-list (CALDERA_ALLOWED_ABILITY_IDS, or ``allowed``
+        when the caller passes its own list), and any paw that fails check_paw. Required fields: paw, executor name,
+        executor command."""
         self.check_paw(pl.paw)
-        if pl.ability_id not in config.CALDERA_ALLOWED_ABILITY_IDS:
-            raise CalderaError(f"ability {pl.ability_id!r} is not in CALDERA_ALLOWED_ABILITY_IDS")
+        permitted = config.CALDERA_ALLOWED_ABILITY_IDS if allowed is None else allowed
+        if pl.ability_id not in permitted:
+            raise CalderaError(f"ability {pl.ability_id!r} is not in the allow-list")
+        # Caldera validates the executor before the handler runs. Without "platform" it fails with HTTP 500
+        # (platform.lower() on None), so a link without a platform is refused here, before any request.
+        if not pl.platform:
+            raise CalderaError(f"executor platform is missing for ability {pl.ability_id!r}; cannot post the link")
         body = {
             "paw": pl.paw,
-            "executor": {"name": pl.executor, "command": pl.command},
+            "executor": {"name": pl.executor, "command": pl.command, "platform": pl.platform},
             "ability": {"ability_id": pl.ability_id},
         }
         link = self._req("POST", f"/operations/{op_id}/potential-links", body)

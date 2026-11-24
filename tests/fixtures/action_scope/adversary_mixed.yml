@@ -1,0 +1,13 @@
+---
+id: fixture-mixed-profile
+name: Fixture Mixed
+description: Synthetic profile for tests/test_action_scope.py. Not a Caldera profile.
+atomic_ordering:
+  - fx-win-discovery
+  - fx-linux-discovery
+  - fx-win-evasion
+  - fx-win-defender
+  - fx-mixed-platforms
+  - fx-executors-windows
+  - fx-clear-logs
+  - fx-missing-from-index

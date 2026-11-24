@@ -15,8 +15,10 @@ class FakeLLM(LLMClient):
         self.latency_s = latency_s
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
+        self.num_predicts = []      # the num_predict of each call, in order (the reply itself is not capped here)
 
-    def complete(self, prompt):
+    def complete(self, prompt, num_predict=None):
+        self.num_predicts.append(num_predict)
         if not self.ok:
             return LLMResult(text='', ok=False, latency_s=self.latency_s, model=self.model,
                              error=self.error or 'fake failure')

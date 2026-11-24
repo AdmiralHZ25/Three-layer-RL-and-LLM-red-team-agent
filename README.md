@@ -1,8 +1,11 @@
 # RED_AGENT
 
-Red agent for CAGE-4 (CybORG): **RL (multi-head DDQN) > Confidence Gate > LLM > Acceptance Gate**.
-Runs from a terminal menu. There is no dashboard and no training code.
-Caldera (Phase 2, lab only) is used only for read-only checks and for planning one step. Nothing is sent to a target from the menu.
+Red agent for CAGE-4 (CybORG). The decision pipeline is **RL (multi-head DDQN) > Confidence Gate > LLM > Acceptance Gate**.
+
+The agent runs from a terminal menu (`run_menu.py`). There is no dashboard and no training code in this repository.
+
+- **Simulation** (options `a`, `b`, `c`, `x`): runs inside the CAGE-4 simulator only. It never touches a VM.
+- **Caldera** (options `k`, `g`): Phase 2, lab only. It talks to a Caldera server over REST. Option `k` only reads. Option `g` sends commands to the lab VM, inside the limits described below.
 
 ## Folder layout
 
@@ -13,8 +16,7 @@ RED_AGENT/
 ├── requirements.txt
 ├── configs/               gate lock, seed protocol, Modelfile for the qwen3-red LLM
 ├── checkpoints/           general_seed42_final.pt (general RL agent)
-├── runs/                  evaluation results (created by the menu)
-├── tests/                 test_smoke.py, test_caldera.py (offline)
+├── tests/                 offline tests (unittest); fixtures/ holds small YAML inputs for them
 ├── third_party/cyborg/    CAGE-4 simulator (CybORG)
 └── red/                   the agent package
     ├── config.py          LLM and Caldera settings (environment variables)
@@ -24,17 +26,21 @@ RED_AGENT/
     ├── llm/               prompt, LLM clients (Ollama, stub), Acceptance Gate
     ├── pipeline/          RL > gate > LLM chooser and its wiring
     ├── evaluation/        evaluator, seed protocol, metrics
-    └── caldera/           Caldera REST client, scope, mapping, choosers, runner, approval gate (Phase 2)
+    └── caldera/           Caldera REST client, action scope, planner, agentic loop, memory, profiles, manual approval
 ```
 
-## Setup (Linux, for example Kali)
+Folders created when you run the menu (`runs/`) and the local Caldera server copy (`caldera/`) are not in the repository (see `.gitignore`).
+
+## Setup
+
+Linux (for example Kali):
 
 ```bash
 python3.10 -m venv .venv                  # Python 3.10 (3.11 should also work)
 source .venv/bin/activate
 pip install torch==2.2.0 --index-url https://download.pytorch.org/whl/cpu   # CPU build; drop the index for a GPU build
 pip install -r requirements.txt
-python -m unittest tests.test_smoke tests.test_caldera -v
+python -m unittest discover -s tests -p "test_*.py" -v
 python run_menu.py
 ```
 
@@ -50,7 +56,7 @@ Windows: `python -m venv .venv`, then `.venv\Scripts\activate`, then the same `p
 
 ## Caldera (Phase 2, lab only)
 
-Caldera runs on its own machine (for example the Kali VM) and the agent talks to it over REST.
+Caldera runs on its own machine (for example a Kali VM). The agent talks to it over REST.
 Settings come only from environment variables. The API key is never written to a file.
 
 | Variable | What it is | Where to get it |
@@ -59,14 +65,19 @@ Settings come only from environment variables. The API key is never written to a
 | `CALDERA_API_KEY` | Caldera API key (the `red` key) | `api_key_red` in Caldera's `conf/local.yml`. Do not paste it into files or commits |
 | `CALDERA_PAW` | Agent id (paw) of the lab VM | GET `/api/v2/agents`, or option `k` |
 | `CALDERA_LAB_HOSTS` | Comma-separated lab host names allowed for the paw | your lab VM names |
-| `CALDERA_ALLOWED_ABILITY_IDS` | Comma-separated ability ids allowed | the abilities you choose in Caldera. Empty = nothing may run |
-| `CALDERA_ADVERSARY_ID`, `CALDERA_PLANNER_ID`, `CALDERA_SOURCE_ID` | Optional. Empty = ad-hoc (the planner adds no actions) | Caldera's API |
+| `CALDERA_ALLOWED_ABILITY_IDS` | Comma-separated ability ids allowed by the allow-list (used by the older single-step path) | the abilities you choose in Caldera. Empty = nothing may run |
+| `CALDERA_ADVERSARY_ID`, `CALDERA_PLANNER_ID`, `CALDERA_SOURCE_ID` | Optional. Empty = ad-hoc. If any of them is set, the operation is refused, because an adversary or planner could run actions outside the allow-list | Caldera's API |
+| `CALDERA_RUN_MAX_STEPS` | Step ceiling for option `g` (default 10, range 1 to 20) | your choice |
+| `CALDERA_RUN_MAX_SECONDS` | Time ceiling for the whole `g` run (default 1800) | your choice |
+| `CALDERA_MAX_CONSECUTIVE_FAILURES` | Stop after this many steps in a row without a successful link (default 3) | your choice |
 
 Menu options:
-- `k` **read-only check**: prints the settings (never the key), lists the agents on the server, and checks `CALDERA_PAW` against the lab hosts.
-- `p` **plan one step, no execution**: creates a temporary operation, lists the allowed abilities for the agent, lets the LLM choose one, and finishes the operation again. The chosen ability is printed. Nothing is sent to the target.
-
-- `g` **unattended operation inside a scope**: the agent creates an operation, then repeats: list the allowed candidates, choose one (RL, LLM, or RL+LLM), check the scope, send, wait for the result. The scope is the approval given in advance: only the allowed abilities and the lab hosts may be sent, and the run stops at the step budget, at the STOP file, or at the first link that does not end with success. Choose the mode when you start (`llm`, `rl`, or `rl+llm`). You must type `JALANKAN` to start. Logs go to `runs/caldera/<time>/steps.jsonl` and `summary.json`.
+- `k` **read-only check**: prints the settings (never the key), lists the agents on the server, and checks `CALDERA_PAW` against `CALDERA_LAB_HOSTS`.
+- `g` **agentic operation**: you choose the agent and write the objective in words. The LLM (Ollama) writes a short plan, then chooses each step from the abilities the server offers. You type `1` once to start. Nothing is asked during the run. RL is not used on this path.
+  - Blocked: abilities whose name contains a blocked word (see `red/caldera/action_scope.py`), abilities with unfilled Caldera fact variables, and abilities that would cut the agent's own control (restart, shutdown, logoff, Wi-Fi off).
+  - Every link must be on the lab host and in the list the server offered. If one link is not, nothing in that step is sent.
+  - The run stops at the objective (only if the quote is really in the output), at the step or time ceiling, at the STOP file, or when the operation ends.
+  - Logs go to `runs/caldera/<time>/`: `steps.jsonl` and `summary.json`.
 
 Stopping early: create an empty file named `STOP` in `runs/caldera/`.
 
@@ -74,18 +85,15 @@ Stopping early: create an empty file named `STOP` in `runs/caldera/`.
 
 | Option | What it runs | Status |
 |---|---|---|
-| a | RL-only (no LLM), quick validation subset | ready |
-| b | RL + on-prem LLM, quick validation subset (also the on-prem-only and single-RL run) | ready |
-| c | LLM-only: the LLM chooses every step among the same legal options; no RL pick. If the answer is rejected, the agent takes `Sleep`. Needs Ollama | ready |
-| d | API LLM only | needs an API client |
-| e | On-prem to API assistance | needs an API client |
-| f | Multi-RL + LLM (Recon, Advance, Impact specialists) | needs trained specialists |
+| a | RL only, quick validation subset (simulator) | ready |
+| b | RL + on-prem LLM, quick validation subset (simulator) | ready |
+| c | LLM only: the LLM chooses every step among the same legal options. If the answer is rejected, the agent takes `Sleep`. Needs Ollama | ready |
+| x | Custom run: choose seeds and whether to use the LLM | ready |
+| g | Caldera agentic operation (LLM plans, inside the limits above). Needs Ollama and Caldera settings | ready |
 | k | Caldera read-only check | ready (needs Caldera settings) |
-| p | Caldera plan one step, no execution | ready (needs Caldera settings) |
 | r | Results summary: impact rate, time-to-impact, LLM share, LLM latency, stage counts | ready |
 | s | System check | ready |
 | o | Ollama check | ready |
-| x | Custom run: choose seeds and whether to use the LLM | ready |
 | q | Quit | |
 
 The quick validation subset is 10 seeds from the validation range. Seeds 40000-40499 (test split) are refused.
@@ -93,11 +101,10 @@ Results are saved under `runs/pipeline_eval/<name>_<time>/`. Existing results ar
 
 ## Limits
 
-- Multi-RL (option f) needs recon and impact specialists that were actually trained. The ones in the training runs have 0 updates, so they are not used.
-- API options (d, e) need an API client and your approval before any briefing is sent to an external service.
-- Caldera operations (option `g`) act on the lab VM without asking for each step. Keep the allow-list to discovery abilities until you have reviewed the logs.
-- The mapping from Caldera techniques to CAGE-4 classes (`red/caldera/mapping.py`) and the 22-feature vector for Caldera (`red/caldera/features.py`) are draft approximations. The RL values for Caldera are heuristics, not the CAGE-4 policy.
+- Option `g` acts on the lab VM without asking for each step. The only approval is the single `1` at the start. Keep the scope to discovery abilities until you have reviewed the logs.
+- Output text from the target is treated as data in every prompt, but the LLM can still be wrong about what it means. The objective check only accepts a quote that appears in the real output.
+- The mapping from Caldera techniques to CAGE-4 classes (`red/caldera/mapping.py`) and the 22-feature vector for Caldera (`red/caldera/features.py`) are draft approximations.
 - The gate values for Caldera are the locked CAGE-4 values, not calibrated for Caldera.
-- The planning step (option p) still has a fallback: if the LLM gives no usable answer, the first allowed ability is taken. Check the LLM first (option o).
 - LLM outputs are not always identical between runs, even with the same seed and code. Example: seed 30000 gave return 126.45 in one validation run and 117.45 in another. The cause is not confirmed.
 - Gate values (theta 0.85, delta 0.8) are in `configs/gate_lock_2026-11-18.json`.
+- Options d and e (API LLM) and f (multi-RL with specialists) are not in the menu: the API client is not built, and the trained specialists were not used.

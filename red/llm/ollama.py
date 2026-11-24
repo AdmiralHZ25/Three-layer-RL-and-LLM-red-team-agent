@@ -34,11 +34,15 @@ class OllamaClient(LLMClient):
             raw = r.read().decode()
         return json.loads(raw) if raw else {}
 
-    def complete(self, prompt):
+    def complete(self, prompt, num_predict=None):
         url = f'{self.base_url}/api/generate'
-        # shortcut: thinking off, 16-token reply cap (qwen3 thinking used the budget with no index, measured 2026-11-18), 8192 context for the deduplicated option list; upgrade if the server log shows truncation
+        # Default reply cap is 16 tokens (qwen3 thinking used the budget with no index, measured 2026-11-18). That default
+        # is kept for the index-only pipeline. The Caldera agent loop passes its own cap per call, because a plan, a stop
+        # reason or an evidence quote does not fit in 16 tokens (it was cut off in the 19 Nov runs).
+        cap = 16 if num_predict is None else int(num_predict)
+        # shortcut: thinking off, 8192 context for the deduplicated option list
         body = {'model': self.model, 'prompt': prompt, 'stream': False, 'think': False,
-                'options': {'temperature': self.temperature, 'num_predict': 16, 'num_ctx': 8192, **self.options}}
+                'options': {'temperature': self.temperature, 'num_predict': cap, 'num_ctx': 8192, **self.options}}
         t0 = time.perf_counter()
         try:
             data = self._http(url, body)
