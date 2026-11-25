@@ -20,7 +20,7 @@ from red.router.snapshot import GENERAL
 
 
 def build_rl_chooser(agents, stage, theta=0.6, delta=0.4, default_stage=GENERAL,
-                     llm_local=None, llm_api=None, acceptance=None, main_head=None, llm_only=False):
+                     llm_local=None, llm_api=None, acceptance=None, main_head=None, llm_only=False, prompt_goal=None):
     """`agents`: dict stage -> MultiHeadDDQNAgent, or a StageSpecialists. An unknown/UNKNOWN stage routes to
     the 'general' agent (`default_stage`); it must be registered, else choose() raises ValueError.
     `stage`: a stage string (constant provider) or a callable stage_provider."""
@@ -28,7 +28,7 @@ def build_rl_chooser(agents, stage, theta=0.6, delta=0.4, default_stage=GENERAL,
     specialists = agents if isinstance(agents, StageSpecialists) else StageSpecialists(agents)
     return StagedHybridChooser(specialists, provider, theta, delta, default_stage=default_stage,
                                llm_local=llm_local, llm_api=llm_api, acceptance=acceptance,
-                               main_head=main_head, llm_only=llm_only)
+                               main_head=main_head, llm_only=llm_only, prompt_goal=prompt_goal)
 
 
 def load_agents(paths):

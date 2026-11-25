@@ -19,7 +19,7 @@ from red.router.snapshot import GENERAL
 
 class StagedHybridChooser:
     def __init__(self, specialists, stage_provider, theta, delta, default_stage=GENERAL,
-                 llm_local=None, llm_api=None, acceptance=None, main_head=None, llm_only=False):
+                 llm_local=None, llm_api=None, acceptance=None, main_head=None, llm_only=False, prompt_goal=None):
         self.specialists = specialists
         self.stage_provider = stage_provider
         self.gate = ConfidenceGate(theta, delta)
@@ -29,6 +29,7 @@ class StagedHybridChooser:
         self.acceptance = acceptance or AcceptanceGate()
         self.main_head = main_head
         self.llm_only = llm_only    # LLM-only framework: the LLM chooses every step; the gate is logged, not used
+        self.prompt_goal = prompt_goal  # optional mission line for the LLM prompt; None = original prompt
 
     def choose(self, candidates, knowledge=None, tick=None):
         stage = self.stage_provider(candidates, knowledge, tick)
@@ -47,7 +48,7 @@ class StagedHybridChooser:
 
         opts = llm_options(candidates, qm[:, mh], mask)   # legal, one per label; the LLM index refers to opts
         main_head_q = qm[opts, mh] if self.acceptance.top_m is not None else None
-        prompt = build_prompt(candidates, knowledge, tick, opts)
+        prompt = build_prompt(candidates, knowledge, tick, opts, goal=self.prompt_goal)
         for layer, llm in (('llm', self.llm_local), ('api', self.llm_api)):
             if llm is None:
                 continue

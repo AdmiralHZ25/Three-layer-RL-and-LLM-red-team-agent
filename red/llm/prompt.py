@@ -28,13 +28,21 @@ def llm_options(candidates, main_q, mask=None):
     return list(best.values())
 
 
-def build_prompt(candidates, knowledge=None, tick=None, options=None):
-    """``options``: candidate indices to list (default: all). The reply is an index into this list."""
+# Tujuan misi untuk LLM (uji 25 Nov, flag --llm-goal). Hipotesis, belum tervalidasi: LLM tidak pernah memilih Impact.
+GOAL_TEXT = ('Mission goal: reach Impact on a target host. Typical progression: discover hosts, gain foothold, '
+             'escalate privilege, then Impact. Prefer actions that move toward Impact. Avoid Sleep and Withdraw '
+             'unless no other action helps.')
+
+
+def build_prompt(candidates, knowledge=None, tick=None, options=None, goal=None):
+    """``options``: candidate indices to list (default: all). The reply is an index into this list.
+    ``goal``: optional one-line mission text placed above the state; None keeps the original prompt."""
     idx = list(range(len(candidates))) if options is None else list(options)
     n = len(idx)
-    lines = [f'State: tick {tick if tick is not None else "?"}, {n} legal actions.',
-             f'Choose exactly one action from the numbered candidates below (0 to {n - 1}).',
-             'Reply with one integer only, nothing else.', '']
+    head = [goal, ''] if goal else []
+    lines = head + [f'State: tick {tick if tick is not None else "?"}, {n} legal actions.',
+                    f'Choose exactly one action from the numbered candidates below (0 to {n - 1}).',
+                    'Reply with one integer only, nothing else.', '']
     for k, i in enumerate(idx):
         lines.append(f'{k}. {candidate_label(candidates[i])}')
     return '\n'.join(lines)

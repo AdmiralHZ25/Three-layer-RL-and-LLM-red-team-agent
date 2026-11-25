@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from red.agents.stages import StageSpecialists, max_q_stage_provider
+from red.llm.prompt import GOAL_TEXT
 from red.pipeline.wiring import build_rl_chooser, load_agents
 from red.simulator import cage4 as v3
 from red.simulator.episode import episode
@@ -110,6 +111,8 @@ def build_parser():
     p.add_argument('--llm', metavar='BACKEND', help='LLM backend for make_llm (stub|ollama|...); omit = LLM off')
     p.add_argument('--llm-only', action='store_true',
                    help='LLM-only framework: the LLM chooses every step (needs --llm); no RL pick is used')
+    p.add_argument('--llm-goal', action='store_true',
+                   help='put the mission goal (red/llm/prompt.py GOAL_TEXT) in the LLM prompt; omit = original prompt')
     p.add_argument('--stage', help='fixed stage instead of the Stage Router (diagnostic use)')
     p.add_argument('--select', choices=('stage', 'maxq'), default='stage',
                    help="'stage' = Stage Router (or --stage); 'maxq' = specialist with the highest main-head Q, no stage prediction")
@@ -158,9 +161,12 @@ def main(argv=None):
         stage = max_q_stage_provider(StageSpecialists(agents))
     else:
         stage = a.stage or router_stage_provider(StageRouter(), runtime.steps)
-    summary = evaluate(lambda: build_rl_chooser(agents, stage, theta, delta, llm_local=llm, llm_only=a.llm_only),
+    goal = GOAL_TEXT if a.llm_goal else None
+    summary = evaluate(lambda: build_rl_chooser(agents, stage, theta, delta, llm_local=llm, llm_only=a.llm_only,
+                                                prompt_goal=goal),
                        seeds, runtime, a.output_dir,
-                       extra={'theta': theta, 'delta': delta, 'llm_only': a.llm_only, 'select': a.select})
+                       extra={'theta': theta, 'delta': delta, 'llm_only': a.llm_only, 'select': a.select,
+                              'llm_goal': a.llm_goal})
     print('EVAL SUMMARY', summary, flush=True)
     return 0
 
